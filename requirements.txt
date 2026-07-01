@@ -1,0 +1,13 @@
+# === 핵심: 스크리너 + 수급 점수화(--flow)에 필요 (앱키/계좌 불필요) ===
+finance-datareader>=0.9.90  # 전종목 스냅샷(거래대금·등락률)·과거 일봉 (네이버 등 공개 소스)
+pandas>=2.0
+tabulate>=0.9.0             # CLI 표 출력
+requests>=2.31             # 네이버 외인·기관 수급 크롤링(--flow)
+lxml>=5.0                  # pandas.read_html 파서
+
+# === 선택 ===
+# pykrx>=1.0.45             # 주도섹터(업종지수) 분석용. 단 최신 버전은 KRX 로그인/차단 이슈 가능
+# pyarrow>=15.0             # parquet 캐시 저장용(이력 축적 단계)
+# backtrader>=1.9.78        # 백테스팅 엔진 (일봉 기준)
+# streamlit>=1.30           # 대시보드/시각화
+# 3단계(키움 REST): kiwoom-rest-api  # ka00198 조회순위·ka10059 수급·ka90013 프로그램

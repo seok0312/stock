@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.python-version
+
+# 데이터·출력 (커밋 금지)
+data/*
+!data/.gitkeep
+*.csv
+*.parquet
+*.sqlite
+*.db
+
+# 비밀키·환경변수 (증권사 앱키/시크릿은 절대 커밋 금지!)
+.env
+.env.*
+!.env.example
+*.key
+secrets.*
+config.local.*
+kis_devlp.yaml
+kiwoom_key.*
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
