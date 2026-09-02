@@ -19,6 +19,10 @@ import notify
 KST = timezone(timedelta(hours=9))
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# 한국 정규장 데이터가 아직 전일치인 이른 시간대는 미국 섹터를 근거로 삼는다.
+# 그 이후는 장중 한국 업종·테마로 판단한다(미국장이 닫혀 있으므로).
+US_SECTOR_SLOTS = {"0600", "0750", "0850"}
+
 ENV_PATHS = (
     os.path.join(HERE, ".env"),
     os.path.join(HERE, "..", ".env"),
@@ -28,14 +32,11 @@ ENV_PATHS = (
 
 
 def pick_slot(now: datetime) -> str:
-    """현재 시각에서 가장 가까운(이미 지난) 슬롯."""
-    h = now.hour
+    """현재 시각에서 이미 지난 슬롯 중 가장 최근 것. 하나도 없으면 마지막(2000)."""
     hm = now.hour * 60 + now.minute
-    if hm >= 19 * 60:
-        return "19"
-    if hm >= 14 * 60 + 30:
-        return "1430"
-    return "07"
+    passed = [(h * 60 + m, k) for k, c in quotes.SLOTS.items()
+              for h, m in (c["at"],) if h * 60 + m <= hm]
+    return max(passed)[1] if passed else list(quotes.SLOTS)[-1]
 
 
 def is_kr_trading_day(d: datetime) -> tuple[bool, str]:
@@ -62,7 +63,8 @@ def is_kr_trading_day(d: datetime) -> tuple[bool, str]:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="종가베팅 시간대별 브리핑")
-    ap.add_argument("--slot", default="auto", choices=["auto", "07", "1430", "19"])
+    ap.add_argument("--slot", default="auto",
+                    choices=["auto"] + list(quotes.SLOTS))
     ap.add_argument("--dry-run", action="store_true", help="텔레그램 전송 없이 출력만")
     ap.add_argument("--force", action="store_true", help="휴장일에도 실행")
     ap.add_argument("--no-news", action="store_true")
@@ -102,10 +104,10 @@ def main(argv=None):
         except Exception as e:
             print(f"  뉴스 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
-    kr_upjong, kr_themes = None, None
+    kr_upjong, kr_themes, kr_when = None, None, None
     if not args.no_sectors:
-        if slot == "07":
-            # 미국장이 막 끝난 시점 → 전일 미국 섹터가 근거
+        if slot in US_SECTOR_SLOTS:
+            # 미국장이 막 끝났고 한국 데이터는 아직 전일치 → 미국 섹터가 근거
             try:
                 import sectors as sec_mod
                 us_sectors = sec_mod.fetch_us_sectors()
@@ -118,12 +120,14 @@ def main(argv=None):
                 import kr_sectors as krs
                 kr_upjong = krs.fetch_upjong()
                 kr_themes = krs.fetch_themes()
+                # 정규장(09:00~15:30) 안이면 '장중', 그 뒤면 '종가 기준'
+                kr_when = "장중" if slot in ("0930", "1430") else "종가 기준"
             except Exception as e:
                 print(f"  한국섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
-                       flows=fl, kr_upjong=kr_upjong, kr_themes=kr_themes,
+                       flows=fl, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)
     return 0

@@ -5,7 +5,8 @@ from __future__ import annotations
 from notify import esc
 
 WD = ["월", "화", "수", "목", "금", "토", "일"]
-ICON = {"07": "🌅", "1430": "🔔", "19": "🌙"}
+ICON = {"0600": "☀️", "0750": "🌅", "0850": "🔔", "0930": "🟢",
+        "1430": "🔔", "1600": "🏁", "1900": "🌙", "2000": "🌛"}
 
 
 def _fmt_px(v, dp):
@@ -18,9 +19,17 @@ def header(win):
             f"<i>{esc(win['label'])} | {win['start']:%m-%d %H:%M} → {win['end']:%m-%d %H:%M}</i>")
 
 
+def _span(win):
+    """구간 길이 표기. 1시간 미만은 분, 그 외는 0.5시간 단위."""
+    mins = round((win["end"] - win["start"]).total_seconds() / 60)
+    if mins < 60:
+        return f"{mins}분"
+    h = mins / 60
+    return f"{h:.0f}시간" if abs(h - round(h)) < 0.05 else f"{h:.1f}시간"
+
+
 def section_quotes(win):
-    hrs = round((win["end"] - win["start"]).total_seconds() / 3600)
-    lines = [f"\n📊 <b>시황</b> <i>({hrs}시간 변동)</i>"]
+    lines = [f"\n📊 <b>시황</b> <i>({_span(win)} 변동)</i>"]
     for r in win["rows"]:
         if r["chg_pct"] is None:
             lines.append(f"  {esc(r['name'])} — 데이터 없음"); continue
@@ -66,7 +75,7 @@ def section_us_sectors(sectors):
     return "\n".join(lines)
 
 
-def section_kr_sectors(upjong, themes):
+def section_kr_sectors(upjong, themes, when="장중"):
     """장중 한국 업종 강약 + 주도 테마.
 
     14:30 / 19시 슬롯용. 미국장이 닫혀 있어 '전일 미국 섹터' 대신
@@ -74,7 +83,7 @@ def section_kr_sectors(upjong, themes):
     """
     lines = []
     if upjong and (upjong.get("up") or upjong.get("down")):
-        lines.append("\n🇰🇷 <b>한국 업종</b> <i>(장중)</i>")
+        lines.append(f"\n🇰🇷 <b>한국 업종</b> <i>({esc(when)})</i>")
         for x in upjong.get("up", []):
             lines.append(f"  🔺 <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%")
         for x in upjong.get("down", []):
@@ -147,11 +156,11 @@ def section_flows(fl):
 
 
 def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
-          flows=None, kr_upjong=None, kr_themes=None, footer=None):
+          flows=None, kr_upjong=None, kr_themes=None, kr_when=None, footer=None):
     parts = [header(win), section_quotes(win)]
     for s in (section_flows(flows),
               section_news(news or {}),
-              section_kr_sectors(kr_upjong, kr_themes),
+              section_kr_sectors(kr_upjong, kr_themes, kr_when or "장중"),
               section_us_sectors(us_sectors or []),
               section_kr_impact(kr_impact or []),
               section_leaders(leaders or [])):

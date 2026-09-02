@@ -25,13 +25,22 @@ INSTRUMENTS = [
     ("비트코인", "BTC/USDT:USDT", "BTCUSDT.P", 0),
 ]
 
-# 슬롯별 시간창: (시작 시:분, 종료 시:분, 시작이 전일인지)
-# 14:30 인 이유 — 투자자별 장중 잠정집계 4·5차가 14:00~14:30 사이에 나오므로
-# 그 수급까지 받은 뒤 매수 판단을 하기 위함(사용자 실관측).
+# 변동폭 기준시점(앵커). 알람 시점에서 '직전에 지난 앵커'까지가 측정 구간이 된다.
+#   08:00  NXT 프리마켓 시작
+#   15:30  정규장 마감
+#   20:00  NXT 마감
+ANCHORS = ((8, 0), (15, 30), (20, 0))
+
+# 알람 슬롯: 키 = 발송시각(HHMM), at = (시, 분)
 SLOTS = {
-    "07":   {"label": "장 시작 전",     "start": (19, 0), "end": (7, 0),  "start_prev_day": True},
-    "1430": {"label": "정규장 마감 전",  "start": (7, 0),  "end": (14, 30), "start_prev_day": False},
-    "19":   {"label": "NXT 마감 전",    "start": (14, 30), "end": (19, 0), "start_prev_day": False},
+    "0600": {"label": "하루 시작",      "at": (6, 0)},
+    "0750": {"label": "NXT 개장 전",    "at": (7, 50)},
+    "0850": {"label": "정규장 개장 전",  "at": (8, 50)},
+    "0930": {"label": "정규장 개장 후",  "at": (9, 30)},
+    "1430": {"label": "정규장 마감 전",  "at": (14, 30)},
+    "1600": {"label": "정규장 마감 후",  "at": (16, 0)},
+    "1900": {"label": "NXT 마감 전",    "at": (19, 0)},
+    "2000": {"label": "NXT 마감 후",    "at": (20, 0)},
 }
 
 _ex = None
@@ -45,19 +54,26 @@ def exchange():
     return _ex
 
 
-def window_bounds(slot: str, now: datetime | None = None):
-    """슬롯 기준 (시작, 종료) KST aware datetime.
-    종료는 '지금'을 넘지 않도록 하루 당긴다(정시보다 일찍 돌려도 창이 어긋나지 않게)."""
+def window_bounds(slot: str, now=None):
+    """(구간 시작, 구간 끝) KST aware datetime.
+
+    끝  = 슬롯 발송시각(지금을 넘으면 하루 당김 — 정시보다 일찍 돌려도 어긋나지 않게)
+    시작 = 그 끝보다 '엄격히 앞선' 가장 가까운 앵커(08:00 / 15:30 / 20:00)
+    """
     now = now or datetime.now(KST)
-    cfg = SLOTS[slot]
-    eh, em = cfg["end"]
-    sh, sm = cfg["start"]
-    end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+    h, m = SLOTS[slot]["at"]
+    end = now.replace(hour=h, minute=m, second=0, microsecond=0)
     if end > now:
         end -= timedelta(days=1)
-    start = end.replace(hour=sh, minute=sm, second=0, microsecond=0)
-    if cfg["start_prev_day"] or start >= end:
-        start -= timedelta(days=1)
+
+    cands = []
+    for day_off in (0, -1):
+        d = end + timedelta(days=day_off)
+        for ah, am in ANCHORS:
+            a = d.replace(hour=ah, minute=am, second=0, microsecond=0)
+            if a < end:
+                cands.append(a)
+    start = max(cands)
     return start, end
 
 
@@ -94,7 +110,7 @@ def fetch_window(slot: str, now: datetime | None = None):
 if __name__ == "__main__":
     import sys
     sys.stdout.reconfigure(encoding="utf-8")
-    for s in ("07", "1430", "19"):
+    for s in SLOTS:
         w = fetch_window(s)
         print(f"\n[{s}시 슬롯 — {w['label']}]  {w['start']:%m-%d %H:%M} → {w['end']:%m-%d %H:%M} KST")
         for r in w["rows"]:
