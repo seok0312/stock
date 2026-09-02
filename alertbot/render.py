@@ -126,24 +126,32 @@ def section_leaders(rows, title="🎯 <b>당일 주도주 후보</b>"):
     return "\n".join(lines)
 
 
-def section_flows(fl):
-    """거래대금만 표기(조 단위 정수 반올림).
+def _flow_fmt(v):
+    """1조 이상은 조, 미만은 억. 소수점 없이도 해상도를 지키기 위함."""
+    if v is None:
+        return None
+    return f"{v/1e4:+,.1f}조" if abs(v) >= 1e4 else f"{v:+,.0f}억"
 
-    투자자별 순매수는 '거래대금'과 다른 축이다 — 순매수는 매수-매도 차액,
-    거래대금은 총 체결금액이라 서로 더하고 뺄 수 없다. 혼동을 피해 표기에서 뺐다.
-    flows.py 는 계속 수집하므로 되살리려면 여기서 flow_eok 만 다시 출력하면 된다.
+
+def section_flows(fl):
+    """거래대금(조 단위 정수) + 순매수(코스피+선물 / 코스닥).
+
+    거래대금은 총 체결금액, 순매수는 매수-매도 차액이라 서로 다른 축이다.
+    그래서 블록을 나눠 표기한다.
+    '기타법인*'은 원자료에 없고 -(개인+외국인+기관) 으로 유도한 값이다.
     """
     if not fl or not fl.get("rows"):
         return ""
+    rows = {m.get("label"): m for m in fl["rows"] if not m.get("error")}
+
     lines = ["\n💰 <b>시장 거래대금</b>"]
     for m in fl["rows"]:
         if m.get("error"):
             lines.append(f"  · {esc(m['label'])} — 조회 실패")
             continue
-        amt = (m.get("amount_won") or 0) / 1e12
-        lines.append(f"  · <b>{esc(m['label'])}</b> {amt:,.0f}조")
-    tot = fl.get("total_amount_jo") or 0
-    lines.append(f"  ── <b>합계 {tot:,.0f}조</b>")
+        lines.append(f"  · <b>{esc(m['label'])}</b> "
+                     f"{(m.get('amount_won') or 0)/1e12:,.0f}조")
+    lines.append(f"  ── <b>합계 {(fl.get('total_amount_jo') or 0):,.0f}조</b>")
     ref = fl.get("ref")
     if ref and ref.get("vs_avg_pct") is not None:
         p = ref["vs_avg_pct"]
@@ -152,6 +160,31 @@ def section_flows(fl):
         scope = "선물포함" if ref.get("with_futures") else "현물만"
         lines.append(f"  <i>{ref['days']}일평균 {ref['avg_jo']:,.0f}조({scope}) 대비 "
                      f"{p:+.0f}% {heat}</i>")
+
+    # ── 순매수: 코스피+선물 / 코스닥
+    KEYS = ("개인", "외국인", "기관", "기타*")
+    LABEL = {"개인": "개인", "외국인": "외국인", "기관": "기관", "기타*": "기타법인*"}
+
+    def merged(names):
+        acc, seen = {k: 0.0 for k in KEYS}, False
+        for n in names:
+            f = (rows.get(n) or {}).get("flow_eok") or {}
+            for k in KEYS:
+                if f.get(k) is not None:
+                    acc[k] += f[k]; seen = True
+        return acc if seen else None
+
+    groups = [("코스피+선물", merged(["코스피", "선물"])),
+              ("코스닥", merged(["코스닥"]))]
+    if any(g[1] for g in groups):
+        lines.append("\n💵 <b>순매수</b>")
+        for title, acc in groups:
+            if not acc:
+                continue
+            parts = [f"{esc(LABEL[k])} {_flow_fmt(acc[k])}" for k in KEYS]
+            lines.append(f"  · <b>{esc(title)}</b>")
+            lines.append("      " + " · ".join(parts))
+        lines.append("  <i>* 기타법인은 원자료 미제공 — 나머지 합으로 유도</i>")
     return "\n".join(lines)
 
 
