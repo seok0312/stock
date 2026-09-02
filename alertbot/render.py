@@ -5,7 +5,7 @@ from __future__ import annotations
 from notify import esc
 
 WD = ["월", "화", "수", "목", "금", "토", "일"]
-ICON = {"07": "🌅", "14": "🔔", "19": "🌙"}
+ICON = {"07": "🌅", "1430": "🔔", "19": "🌙"}
 
 
 def _fmt_px(v, dp):
@@ -92,9 +92,46 @@ def section_leaders(rows, title="🎯 <b>당일 주도주 후보</b>"):
     return "\n".join(lines)
 
 
-def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None, footer=None):
+def section_flows(fl):
+    """flows.summary() 결과 → 거래대금 + 투자자별 수급 섹션.
+
+    거래대금은 '시장에 돈과 관심이 얼마나 쏠려 있나'를 보는 지표라
+    절대값보다 과거 평균 대비 온도가 중요하다.
+    """
+    if not fl or not fl.get("rows"):
+        return ""
+    lines = ["\n💰 <b>시장 거래대금</b>"]
+    for m in fl["rows"]:
+        if m.get("error"):
+            lines.append(f"  {esc(m['label'])} — 조회 실패")
+            continue
+        amt = (m.get("amount_won") or 0) / 1e12
+        f = m.get("flow_eok") or {}
+        lines.append(f"  <b>{esc(m['label'])}</b> {amt:,.2f}조")
+        parts = []
+        for k in ("개인", "외국인", "기관"):
+            v = f.get(k)
+            if v is not None:
+                parts.append(f"{esc(k)} {v:+,.0f}억")
+        if parts:
+            lines.append("    " + " · ".join(parts))
+    tot = fl.get("total_amount_jo") or 0
+    lines.append(f"  ── <b>합계 {tot:,.2f}조</b>")
+    ref = fl.get("ref")
+    if ref and ref.get("vs_avg_pct") is not None:
+        p = ref["vs_avg_pct"]
+        heat = "🔥 과열" if p > 30 else ("🌿 활발" if p > 5 else
+               ("💤 한산" if p < -20 else "▫️ 보통"))
+        lines.append(f"  <i>현물 {ref['spot_jo']:.2f}조 vs {ref['days']}일평균 "
+                     f"{ref['avg_jo']:.2f}조 → {p:+.1f}% {heat}</i>")
+    return "\n".join(lines)
+
+
+def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
+          flows=None, footer=None):
     parts = [header(win), section_quotes(win)]
-    for s in (section_news(news or {}),
+    for s in (section_flows(flows),
+              section_news(news or {}),
               section_us_sectors(us_sectors or []),
               section_kr_impact(kr_impact or []),
               section_leaders(leaders or [])):

@@ -23,10 +23,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 def pick_slot(now: datetime) -> str:
     """현재 시각에서 가장 가까운(이미 지난) 슬롯."""
     h = now.hour
-    if h >= 19:
+    hm = now.hour * 60 + now.minute
+    if hm >= 19 * 60:
         return "19"
-    if h >= 14:
-        return "14"
+    if hm >= 14 * 60 + 30:
+        return "1430"
     return "07"
 
 
@@ -54,11 +55,12 @@ def is_kr_trading_day(d: datetime) -> tuple[bool, str]:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="종가베팅 시간대별 브리핑")
-    ap.add_argument("--slot", default="auto", choices=["auto", "07", "14", "19"])
+    ap.add_argument("--slot", default="auto", choices=["auto", "07", "1430", "19"])
     ap.add_argument("--dry-run", action="store_true", help="텔레그램 전송 없이 출력만")
     ap.add_argument("--force", action="store_true", help="휴장일에도 실행")
     ap.add_argument("--no-news", action="store_true")
     ap.add_argument("--no-sectors", action="store_true")
+    ap.add_argument("--no-flows", action="store_true")
     args = ap.parse_args(argv)
 
     sys.stdout.reconfigure(encoding="utf-8")
@@ -79,6 +81,14 @@ def main(argv=None):
     win = quotes.fetch_window(slot, now)
     news = {}
     us_sectors, kr_impact = [], []
+    fl = None
+
+    if not args.no_flows:
+        try:
+            import flows as flows_mod
+            fl = flows_mod.summary()
+        except Exception as e:
+            print(f"  거래대금 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
     if not args.no_news:
         try:
@@ -97,7 +107,7 @@ def main(argv=None):
 
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
-                       footer=f"유의미 변동 {sig}/5종 · 자동수집")
+                       flows=fl, footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)
     return 0
 

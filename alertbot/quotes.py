@@ -22,11 +22,13 @@ INSTRUMENTS = [
     ("비트코인", "BTC/USDT:USDT", "BTCUSDT.P", 0),
 ]
 
-# 슬롯별 (창 시작시각, 창 종료시각, 시작이 전일인지)
+# 슬롯별 시간창: (시작 시:분, 종료 시:분, 시작이 전일인지)
+# 14:30 인 이유 — 투자자별 장중 잠정집계 4·5차가 14:00~14:30 사이에 나오므로
+# 그 수급까지 받은 뒤 매수 판단을 하기 위함(사용자 실관측).
 SLOTS = {
-    "07": {"label": "장 시작 전",   "start_h": 19, "end_h": 7,  "start_prev_day": True},
-    "14": {"label": "정규장 마감 전", "start_h": 7,  "end_h": 14, "start_prev_day": False},
-    "19": {"label": "NXT 마감 전",  "start_h": 14, "end_h": 19, "start_prev_day": False},
+    "07":   {"label": "장 시작 전",     "start": (19, 0), "end": (7, 0),  "start_prev_day": True},
+    "1430": {"label": "정규장 마감 전",  "start": (7, 0),  "end": (14, 30), "start_prev_day": False},
+    "19":   {"label": "NXT 마감 전",    "start": (14, 30), "end": (19, 0), "start_prev_day": False},
 }
 
 _ex = None
@@ -41,14 +43,16 @@ def exchange():
 
 
 def window_bounds(slot: str, now: datetime | None = None):
-    """슬롯 기준 (시작시각, 종료시각) KST aware datetime.
-    종료시각은 '지금'을 넘지 않도록 잘라낸다(정시보다 일찍 돌려도 동작)."""
+    """슬롯 기준 (시작, 종료) KST aware datetime.
+    종료는 '지금'을 넘지 않도록 하루 당긴다(정시보다 일찍 돌려도 창이 어긋나지 않게)."""
     now = now or datetime.now(KST)
     cfg = SLOTS[slot]
-    end = now.replace(hour=cfg["end_h"], minute=0, second=0, microsecond=0)
-    if end > now:                       # 아직 그 시각 전이면 어제 기준
+    eh, em = cfg["end"]
+    sh, sm = cfg["start"]
+    end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+    if end > now:
         end -= timedelta(days=1)
-    start = end.replace(hour=cfg["start_h"], minute=0, second=0, microsecond=0)
+    start = end.replace(hour=sh, minute=sm, second=0, microsecond=0)
     if cfg["start_prev_day"] or start >= end:
         start -= timedelta(days=1)
     return start, end
@@ -87,7 +91,7 @@ def fetch_window(slot: str, now: datetime | None = None):
 if __name__ == "__main__":
     import sys
     sys.stdout.reconfigure(encoding="utf-8")
-    for s in ("07", "14", "19"):
+    for s in ("07", "1430", "19"):
         w = fetch_window(s)
         print(f"\n[{s}시 슬롯 — {w['label']}]  {w['start']:%m-%d %H:%M} → {w['end']:%m-%d %H:%M} KST")
         for r in w["rows"]:
