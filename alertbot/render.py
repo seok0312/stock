@@ -113,16 +113,51 @@ def section_kr_impact(impacts):
     return "\n".join(lines)
 
 
-def section_leaders(rows, title="🎯 <b>당일 주도주 후보</b>"):
-    """closebet 스크리너 결과: [{종목명, 종목코드, 등락률, 거래대금, 점수}]"""
-    if not rows:
+def section_program(fl):
+    """프로그램 매매(차익/비차익).
+
+    투자자별(개인·외국인·기관·기타법인)과 '독립된 5번째 주체'가 아니다.
+    투자자 분류는 거래 주체, 프로그램은 거래 방식(15종목 이상 바스켓 주문) 기준이라
+    서로 직교한다 — 외국인이 낸 비차익 매수는 외국인 순매수에도, 비차익에도 잡힌다.
+    비차익은 주로 외국인·기관의 대량 바스켓이라 '큰손이 쓸어담나'의 별도 신호로 본다.
+    """
+    if not fl or not fl.get("rows"):
         return ""
-    lines = [f"\n{title}"]
-    for r in rows[:8]:
-        amt = r.get("거래대금", 0) / 1e8
-        sc = f" · 점수 {r['점수']:.2f}" if r.get("점수") is not None else ""
-        lines.append(f"  {esc(r['종목명'])}({r.get('종목코드','')}) "
-                     f"<b>{r.get('등락률',0):+.2f}%</b> · {amt:,.0f}억{sc}")
+    parts = []
+    for m in fl["rows"]:
+        p = m.get("program_eok") or {}
+        if p.get("비차익") is None:
+            continue
+        seg = f"{esc(m['label'])} 비차익 {_flow_fmt(p['비차익'])}"
+        if p.get("차익") is not None:
+            seg += f" · 차익 {_flow_fmt(p['차익'])}"
+        parts.append(seg)
+    if not parts:
+        return ""
+    return ("\n🤖 <b>프로그램 매매</b>\n  · " + "\n  · ".join(parts) +
+            "\n  <i>투자자별 분류와 별개 축 — 같은 거래가 양쪽에 중복 집계됨</i>")
+
+
+def section_leaders(ld, title="🎯 <b>당일 주도주 후보</b>"):
+    """leaders.fetch_leaders() 결과."""
+    if not ld or not ld.get("rows"):
+        return ""
+    lines = [f"\n{title} <i>({esc(ld.get('source') or '')})</i>"]
+    for r in ld["rows"]:
+        amt = r.get("거래대금")
+        seg = f"  · <b>{esc(r['종목명'])}</b>({r.get('종목코드','')}) {r.get('등락률',0):+.2f}%"
+        if amt is not None:
+            seg += f" · {amt:,.0f}억"
+        lines.append(seg)
+        sub = []
+        for k, lab in (("외국인", "외국인"), ("기관", "기관")):
+            v = r.get(k)
+            if v is not None:
+                sub.append(f"{lab} {v:+,.0f}주")
+        if r.get("프로그램") is not None:
+            sub.append(f"프로그램 {r['프로그램']:+,.0f}억")
+        if sub:
+            lines.append("      " + " · ".join(sub))
     return "\n".join(lines)
 
 
@@ -219,9 +254,11 @@ def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
     for s in (section_flows(flows, flows_cmp),
               section_news(news or {}),
               section_kr_sectors(kr_upjong, kr_themes, kr_when or "장중"),
+              section_program(flows),
+              section_leaders(leaders),
               section_us_sectors(us_sectors or []),
               section_kr_impact(kr_impact or []),
-              section_leaders(leaders or [])):
+              ):
         if s:
             parts.append(s)
     if footer:

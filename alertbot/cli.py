@@ -23,6 +23,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 그 이후는 장중 한국 업종·테마로 판단한다(미국장이 닫혀 있으므로).
 US_SECTOR_SLOTS = {"0600", "0750", "0850"}
 
+# 주도주는 장중·마감 이후에만 의미가 있다(개장 전엔 전일 데이터).
+LEADER_SLOTS = {"0930", "1430", "1600", "1900", "2000"}
+
 ENV_PATHS = (
     os.path.join(HERE, ".env"),
     os.path.join(HERE, "..", ".env"),
@@ -70,6 +73,7 @@ def main(argv=None):
     ap.add_argument("--no-news", action="store_true")
     ap.add_argument("--no-sectors", action="store_true")
     ap.add_argument("--no-flows", action="store_true")
+    ap.add_argument("--no-leaders", action="store_true")
     ap.add_argument("--no-store", action="store_true",
                     help="스냅샷을 파일에 기록하지 않음(테스트용)")
     args = ap.parse_args(argv)
@@ -141,9 +145,17 @@ def main(argv=None):
             except Exception as e:
                 print(f"  한국섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
+    ld = None
+    if slot in LEADER_SLOTS and not args.no_leaders:
+        try:
+            import leaders as ld_mod
+            ld = ld_mod.fetch_leaders(top=8)
+        except Exception as e:
+            print(f"  주도주 수집 실패(계속 진행): {type(e).__name__}: {e}")
+
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
-                       flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
+                       leaders=ld, flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)
     return 0
