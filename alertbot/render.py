@@ -51,31 +51,33 @@ def section_news(news_by_asset):
 
 
 def section_us_sectors(sectors):
-    """sectors: [{sector, change_pct}] 내림차순"""
+    """전일 미국 섹터 — 시황과 같은 🔺🔻 마커로 통일."""
     if not sectors:
         return ""
     up = [s for s in sectors if s["change_pct"] > 0][:4]
     dn = [s for s in sectors if s["change_pct"] < 0][-3:]
+    if not up and not dn:
+        return ""
     lines = ["\n🇺🇸 <b>전일 미국 섹터</b>"]
-    if up:
-        lines.append("  강세 " + ", ".join(f"{esc(s['sector'])} <b>{s['change_pct']:+.2f}%</b>" for s in up))
-    if dn:
-        lines.append("  약세 " + ", ".join(f"{esc(s['sector'])} <b>{s['change_pct']:+.2f}%</b>" for s in dn))
+    for s in up:
+        lines.append(f"  🔺 <b>{esc(s['sector'])}</b> {s['change_pct']:+.2f}%")
+    for s in reversed(dn):
+        lines.append(f"  🔻 <b>{esc(s['sector'])}</b> {s['change_pct']:+.2f}%")
     return "\n".join(lines)
 
 
 def section_kr_impact(impacts):
-    """impacts: [{kr_sector, driver, tickers, note}] — '원인 → 결과' 순으로 표기."""
+    """impacts: [{kr_sector, driver, tickers, note}] — '원인 → 결과' 순."""
     if not impacts:
         return ""
     lines = ["\n🇰🇷 <b>한국시장 영향 예상</b>"]
     for im in impacts[:5]:
-        lines.append(f"  {esc(im['driver'])} <b>→ {esc(im['kr_sector'])}</b>")
+        lines.append(f"  · {esc(im['driver'])} <b>→ {esc(im['kr_sector'])}</b>")
         if im.get("tickers"):
             names = ", ".join(f"{esc(t['name'])}({t['code']})" for t in im["tickers"][:5])
-            lines.append(f"    {names}")
+            lines.append(f"      {names}")
         if im.get("note"):
-            lines.append(f"    <i>{esc(im['note'])[:160]}</i>")
+            lines.append(f"      <i>{esc(im['note'])[:160]}</i>")
     return "\n".join(lines)
 
 
@@ -93,34 +95,21 @@ def section_leaders(rows, title="🎯 <b>당일 주도주 후보</b>"):
 
 
 def section_flows(fl):
-    """거래대금 + 투자자별 순매수.
+    """거래대금만 표기(조 단위 정수 반올림).
 
-    표기 규칙: 거래대금은 조 단위 정수(반올림).
-    순매수는 1조 이상이면 정수 조, 미만이면 정수 억 — 소수점을 없애면서도
-    코스닥처럼 작은 값의 해상도를 잃지 않기 위함.
-    '기타*'는 원자료에 없고 -(개인+외국인+기관) 으로 유도한 값(기타법인+기타외국인).
+    투자자별 순매수는 '거래대금'과 다른 축이다 — 순매수는 매수-매도 차액,
+    거래대금은 총 체결금액이라 서로 더하고 뺄 수 없다. 혼동을 피해 표기에서 뺐다.
+    flows.py 는 계속 수집하므로 되살리려면 여기서 flow_eok 만 다시 출력하면 된다.
     """
     if not fl or not fl.get("rows"):
         return ""
-
-    def flow_fmt(v):
-        if v is None:
-            return None
-        return f"{v/1e4:+,.0f}조" if abs(v) >= 1e4 else f"{v:+,.0f}억"
-
     lines = ["\n💰 <b>시장 거래대금</b>"]
     for m in fl["rows"]:
         if m.get("error"):
-            lines.append(f"  {esc(m['label'])} — 조회 실패")
+            lines.append(f"  · {esc(m['label'])} — 조회 실패")
             continue
         amt = (m.get("amount_won") or 0) / 1e12
-        f = m.get("flow_eok") or {}
-        lines.append(f"  <b>{esc(m['label'])}</b> {amt:,.0f}조")
-        parts = [f"{esc(k)} {flow_fmt(f[k])}"
-                 for k in ("개인", "외국인", "기관", "기타*")
-                 if f.get(k) is not None]
-        if parts:
-            lines.append("    " + " · ".join(parts))
+        lines.append(f"  · <b>{esc(m['label'])}</b> {amt:,.0f}조")
     tot = fl.get("total_amount_jo") or 0
     lines.append(f"  ── <b>합계 {tot:,.0f}조</b>")
     ref = fl.get("ref")
