@@ -130,15 +130,23 @@ def _flow_fmt(v):
     """순매수 표기는 조 단위 소수 1자리로 통일.
     1,000억 = 0.1조. 그 미만은 반올림돼 0.1 또는 0.0 으로 표시된다."""
     return None if v is None else f"{v/1e4:+,.1f}조"
-def section_flows(fl):
+
+
+def _heat(p):
+    return "🔥 과열" if p > 30 else ("🌿 활발" if p > 5 else
+           ("💤 한산" if p < -20 else "▫️ 보통"))
+
+
+def section_flows(fl, cmp=None):
     """거래대금(조 단위 정수) + 순매수(코스피+선물 / 코스닥).
 
-    거래대금은 총 체결금액, 순매수는 매수-매도 차액이라 서로 다른 축이다.
-    그래서 블록을 나눠 표기한다.
-    '기타법인*'은 원자료에 없고 -(개인+외국인+기관) 으로 유도한 값이다.
-    순매수 총합은 항등적으로 0이므로 이 유도값 = 기타법인 + 기타외국인.
-    키움 ka10061 로 코스피 상위 10종목을 실측 대조한 결과 유도값 1,582,423 vs
-    기타법인+기타외국인 1,582,424 로 일치했고, 기타법인 단독과의 오차는 0.4%였다.
+    cmp: store.compare() 결과. 같은 슬롯(같은 시각)의 과거 평균과 비교한다.
+         장중 값은 '그 시각까지의 누적'이라 완결된 하루 평균과 비교하면
+         늘 작게 나온다. 같은 시각끼리 비교해야 의미가 있다.
+         표본이 쌓이기 전에는 None 이라 기존 종가평균 비교로 폴백한다.
+    '기타법인*'은 -(개인+외국인+기관) 으로 유도한 값. 순매수 총합은 항등적으로
+    0이므로 이 값 = 기타법인 + 기타외국인이고, 키움 ka10061 실측 대조 결과
+    기타법인 단독과의 오차는 0.4%였다.
     """
     if not fl or not fl.get("rows"):
         return ""
@@ -152,16 +160,19 @@ def section_flows(fl):
         lines.append(f"  · <b>{esc(m['label'])}</b> "
                      f"{(m.get('amount_won') or 0)/1e12:,.0f}조")
     lines.append(f"  ── <b>합계 {(fl.get('total_amount_jo') or 0):,.0f}조</b>")
-    ref = fl.get("ref")
-    if ref and ref.get("vs_avg_pct") is not None:
-        p = ref["vs_avg_pct"]
-        heat = "🔥 과열" if p > 30 else ("🌿 활발" if p > 5 else
-               ("💤 한산" if p < -20 else "▫️ 보통"))
-        scope = "선물포함" if ref.get("with_futures") else "현물만"
-        lines.append(f"  <i>{ref['days']}일평균 {ref['avg_jo']:,.0f}조({scope}) 대비 "
-                     f"{p:+.0f}% {heat}</i>")
 
-    # ── 순매수: 코스피+선물 / 코스닥
+    ca = (cmp or {}).get("amount")
+    if ca and ca.get("pct") is not None:
+        lines.append(f"  <i>같은 시각 {ca['n']}일평균 {ca['avg']/1e12:,.0f}조 대비 "
+                     f"{ca['pct']:+.0f}% {_heat(ca['pct'])}</i>")
+    else:
+        ref = fl.get("ref")
+        if ref and ref.get("vs_avg_pct") is not None:
+            p = ref["vs_avg_pct"]
+            scope = "선물포함" if ref.get("with_futures") else "현물만"
+            lines.append(f"  <i>{ref['days']}일 종가평균 {ref['avg_jo']:,.0f}조({scope}) 대비 "
+                         f"{p:+.0f}% {_heat(p)}</i>")
+
     KEYS = ("개인", "외국인", "기관", "기타*")
     LABEL = {"개인": "개인", "외국인": "외국인", "기관": "기관", "기타*": "기타법인*"}
 
@@ -184,14 +195,28 @@ def section_flows(fl):
             parts = [f"{esc(LABEL[k])} {_flow_fmt(acc[k])}" for k in KEYS]
             lines.append(f"  · <b>{esc(title)}</b>")
             lines.append("      " + " · ".join(parts))
+
+        note = []
+        for key, name in (("foreign", "외국인"), ("inst", "기관"), ("indiv", "개인")):
+            c = (cmp or {}).get(key)
+            if not c:
+                continue
+            z = c.get("z") or 0
+            if abs(z) < 1.0:
+                continue
+            verb = "대량 순매수" if c["today"] > c["avg"] else "대량 순매도"
+            note.append(f"{esc(name)} <i>(같은 시각 평균 {_flow_fmt(c['avg'])}, "
+                        f"{z:+.1f}σ {verb})</i>")
+        if note:
+            lines.append("  ⚡ " + " / ".join(note))
         lines.append("  <i>* 기타법인은 나머지 합으로 유도 (키움 실측 대조 오차 0.4%)</i>")
     return "\n".join(lines)
 
 
 def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
-          flows=None, kr_upjong=None, kr_themes=None, kr_when=None, footer=None):
+          flows=None, flows_cmp=None, kr_upjong=None, kr_themes=None, kr_when=None, footer=None):
     parts = [header(win), section_quotes(win)]
-    for s in (section_flows(flows),
+    for s in (section_flows(flows, flows_cmp),
               section_news(news or {}),
               section_kr_sectors(kr_upjong, kr_themes, kr_when or "장중"),
               section_us_sectors(us_sectors or []),

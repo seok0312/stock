@@ -70,6 +70,8 @@ def main(argv=None):
     ap.add_argument("--no-news", action="store_true")
     ap.add_argument("--no-sectors", action="store_true")
     ap.add_argument("--no-flows", action="store_true")
+    ap.add_argument("--no-store", action="store_true",
+                    help="스냅샷을 파일에 기록하지 않음(테스트용)")
     args = ap.parse_args(argv)
 
     sys.stdout.reconfigure(encoding="utf-8")
@@ -90,12 +92,26 @@ def main(argv=None):
     us_sectors, kr_impact = [], []
     fl = None
 
+    fl_cmp = None
     if not args.no_flows:
         try:
             import flows as flows_mod
             fl = flows_mod.summary()
         except Exception as e:
             print(f"  거래대금 수집 실패(계속 진행): {type(e).__name__}: {e}")
+        if fl:
+            try:
+                import store
+                # 같은 시각 과거와 비교 → 저장은 비교 뒤에(오늘 값이 표본에 섞이지 않게)
+                fl_cmp = store.compare(slot, fl)
+                if fl_cmp:
+                    print(f"  같은 시각 비교 표본 {fl_cmp['n']}일")
+                else:
+                    print("  같은 시각 비교 표본 없음 — 종가평균으로 폴백")
+                if not args.no_store:
+                    store.append(store.build_record(slot, fl, now))
+            except Exception as e:
+                print(f"  스냅샷 저장/비교 실패(계속 진행): {type(e).__name__}: {e}")
 
     if not args.no_news:
         try:
@@ -127,7 +143,7 @@ def main(argv=None):
 
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
-                       flows=fl, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
+                       flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)
     return 0
