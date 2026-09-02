@@ -127,12 +127,9 @@ def section_leaders(rows, title="🎯 <b>당일 주도주 후보</b>"):
 
 
 def _flow_fmt(v):
-    """1조 이상은 조, 미만은 억. 소수점 없이도 해상도를 지키기 위함."""
-    if v is None:
-        return None
-    return f"{v/1e4:+,.1f}조" if abs(v) >= 1e4 else f"{v:+,.0f}억"
-
-
+    """순매수 표기는 조 단위 소수 1자리로 통일.
+    1,000억 = 0.1조. 그 미만은 반올림돼 0.1 또는 0.0 으로 표시된다."""
+    return None if v is None else f"{v/1e4:+,.1f}조"
 def section_flows(fl):
     """거래대금(조 단위 정수) + 순매수(코스피+선물 / 코스닥).
 
