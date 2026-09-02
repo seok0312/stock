@@ -65,12 +65,12 @@ def section_us_sectors(sectors):
 
 
 def section_kr_impact(impacts):
-    """impacts: [{kr_sector, driver, tickers:[{name,code}], note}]"""
+    """impacts: [{kr_sector, driver, tickers, note}] — '원인 → 결과' 순으로 표기."""
     if not impacts:
         return ""
     lines = ["\n🇰🇷 <b>한국시장 영향 예상</b>"]
     for im in impacts[:5]:
-        lines.append(f"  <b>{esc(im['kr_sector'])}</b> <i>← {esc(im['driver'])}</i>")
+        lines.append(f"  {esc(im['driver'])} <b>→ {esc(im['kr_sector'])}</b>")
         if im.get("tickers"):
             names = ", ".join(f"{esc(t['name'])}({t['code']})" for t in im["tickers"][:5])
             lines.append(f"    {names}")
@@ -93,13 +93,21 @@ def section_leaders(rows, title="🎯 <b>당일 주도주 후보</b>"):
 
 
 def section_flows(fl):
-    """flows.summary() 결과 → 거래대금 + 투자자별 수급 섹션.
+    """거래대금 + 투자자별 순매수.
 
-    거래대금은 '시장에 돈과 관심이 얼마나 쏠려 있나'를 보는 지표라
-    절대값보다 과거 평균 대비 온도가 중요하다.
+    표기 규칙: 거래대금은 조 단위 정수(반올림).
+    순매수는 1조 이상이면 정수 조, 미만이면 정수 억 — 소수점을 없애면서도
+    코스닥처럼 작은 값의 해상도를 잃지 않기 위함.
+    '기타*'는 원자료에 없고 -(개인+외국인+기관) 으로 유도한 값(기타법인+기타외국인).
     """
     if not fl or not fl.get("rows"):
         return ""
+
+    def flow_fmt(v):
+        if v is None:
+            return None
+        return f"{v/1e4:+,.0f}조" if abs(v) >= 1e4 else f"{v:+,.0f}억"
+
     lines = ["\n💰 <b>시장 거래대금</b>"]
     for m in fl["rows"]:
         if m.get("error"):
@@ -107,23 +115,22 @@ def section_flows(fl):
             continue
         amt = (m.get("amount_won") or 0) / 1e12
         f = m.get("flow_eok") or {}
-        lines.append(f"  <b>{esc(m['label'])}</b> {amt:,.2f}조")
-        parts = []
-        for k in ("개인", "외국인", "기관", "기타법인"):
-            v = f.get(k)
-            if v is not None:
-                parts.append(f"{esc(k)} {v/1e4:+,.2f}조")   # 네이버 순매수 단위 억원 → 조
+        lines.append(f"  <b>{esc(m['label'])}</b> {amt:,.0f}조")
+        parts = [f"{esc(k)} {flow_fmt(f[k])}"
+                 for k in ("개인", "외국인", "기관", "기타*")
+                 if f.get(k) is not None]
         if parts:
             lines.append("    " + " · ".join(parts))
     tot = fl.get("total_amount_jo") or 0
-    lines.append(f"  ── <b>합계 {tot:,.2f}조</b>")
+    lines.append(f"  ── <b>합계 {tot:,.0f}조</b>")
     ref = fl.get("ref")
     if ref and ref.get("vs_avg_pct") is not None:
         p = ref["vs_avg_pct"]
         heat = "🔥 과열" if p > 30 else ("🌿 활발" if p > 5 else
                ("💤 한산" if p < -20 else "▫️ 보통"))
-        lines.append(f"  <i>현물 {ref['spot_jo']:.2f}조 vs {ref['days']}일평균 "
-                     f"{ref['avg_jo']:.2f}조 → {p:+.1f}% {heat}</i>")
+        scope = "선물포함" if ref.get("with_futures") else "현물만"
+        lines.append(f"  <i>{ref['days']}일평균 {ref['avg_jo']:,.0f}조({scope}) 대비 "
+                     f"{p:+.0f}% {heat}</i>")
     return "\n".join(lines)
 
 

@@ -58,10 +58,15 @@ def fetch_market(code: str) -> dict | None:
         amt_won = v * 1e6 if "백만" in str(raw) else v      # '백만' 단위 표기
 
     d = j.get("dealTrendInfo") or {}
-    # 순매수 단위는 억원 (네이버 표기 관례)
+    # 순매수 단위는 억원. (검증: 개인 순매수/거래대금 ≈ 15% → 억원이 맞다.
+    #  백만원으로 보면 0.2% 로 비현실적)
     flow = {"개인": _num(d.get("personalValue")),
             "외국인": _num(d.get("foreignValue")),
             "기관": _num(d.get("institutionalValue"))}
+    # 모든 주체의 순매수 합은 0이다(누가 사면 누가 팔았으므로).
+    # 네이버가 3분류만 주므로 잔여분 = 기타법인 + 기타외국인. 파생값이라 별표 표기.
+    if all(v is not None for v in flow.values()):
+        flow["기타*"] = -(flow["개인"] + flow["외국인"] + flow["기관"])
     p = j.get("programTrendInfo") or {}
     return {
         "name": j.get("stockName"), "code": code,
@@ -93,11 +98,37 @@ def fetch_all() -> dict:
             "total_amount_jo": total / JO, "bizdate": bizdate}
 
 
-def history(days: int = 20, exclude_partial: bool = True):
-    """코스피+코스닥 일별 거래대금 추이(조원). 선물은 일별 무료소스가 없어 제외.
+FUT_MULTIPLIER = 250_000      # 코스피200 선물 1계약 = 지수 1p당 25만원 (실측 검증 99.1%)
+CHART = "https://api.stock.naver.com/chart/domestic/index/{code}"
+
+
+def _fut_amount_series(count: int = 60):
+    """선물 일별 거래대금(원). 네이버 차트는 계약수만 주므로
+    계약수 × 종가 × 25만원 으로 환산한다."""
+    try:
+        import pandas as pd
+        r = requests.get(CHART.format(code="FUT"), headers=UA,
+                         params={"periodType": "dayCandle", "count": count}, timeout=20)
+        if r.status_code != 200:
+            return None
+        rows = r.json().get("priceInfos") or []
+        idx, val = [], []
+        for x in rows:
+            q, px = x.get("accumulatedTradingVolume"), x.get("closePrice")
+            if not q or not px:
+                continue
+            idx.append(pd.to_datetime(str(x["localDate"])))
+            val.append(q * px * FUT_MULTIPLIER)
+        return pd.Series(val, index=idx, name="선물") if idx else None
+    except Exception:
+        return None
+
+
+def history(days: int = 20, exclude_partial: bool = True, include_futures: bool = True):
+    """코스피+코스닥+선물 일별 거래대금 추이(조원).
 
     exclude_partial: 장 마감(15:40) 전이면 당일 행은 미완성이라 제외한다.
-    (장중 FDR Amount 는 그 시점까지의 누적이라 평균 비교를 왜곡한다)
+    (장중 누적값을 과거 완결일 평균과 비교하면 크게 왜곡된다)
     """
     try:
         import FinanceDataReader as fdr
@@ -115,7 +146,12 @@ def history(days: int = 20, exclude_partial: bool = True):
             pass
     if not out:
         return None
-    df = pd.DataFrame(out).dropna()
+    df = pd.DataFrame(out)
+    if include_futures:
+        f = _fut_amount_series(count=days * 3 + 30)
+        if f is not None:
+            df = df.join(f, how="left")
+    df = df.dropna()
     now = datetime.now(KST)
     if exclude_partial and len(df):
         closed = now.hour > 15 or (now.hour == 15 and now.minute >= 40)
@@ -128,18 +164,18 @@ def history(days: int = 20, exclude_partial: bool = True):
 
 
 def summary(days: int = 20):
-    """현재 거래대금 + 과거 평균 대비 온도. render 에서 쓰기 좋은 형태."""
+    """현재 거래대금 + 과거 평균 대비 온도. 선물 포함 기준으로 비교한다."""
     cur = fetch_all()
-    h = history(days)
+    h = history(days, include_futures=True)
     ref = None
     if h is not None and len(h):
         avg = float(h["합계"].mean())
-        # 선물 제외 비교(과거 추이가 코스피+코스닥이므로 같은 기준으로 맞춘다)
-        spot = sum(m["amount_won"] for m in cur["rows"]
-                   if not m.get("error") and m["label"] != "선물" and m["amount_won"])
-        ref = {"avg_jo": avg, "spot_jo": spot / JO,
-               "vs_avg_pct": (spot / JO / avg - 1) * 100 if avg else None,
-               "days": len(h)}
+        today = sum(m["amount_won"] for m in cur["rows"]
+                    if not m.get("error") and m["amount_won"]) / JO
+        ref = {"avg_jo": avg, "today_jo": today,
+               "vs_avg_pct": (today / avg - 1) * 100 if avg else None,
+               "days": len(h),
+               "with_futures": "선물" in h.columns}
     cur["ref"] = ref
     return cur
 

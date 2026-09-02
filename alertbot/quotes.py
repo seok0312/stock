@@ -15,10 +15,10 @@ KST = timezone(timedelta(hours=9))
 
 # 표시명 → (ccxt 심볼, 트레이딩뷰 티커, 소수자리)
 INSTRUMENTS = [
+    ("오일",     "CL/USDT:USDT",  "CLUSDT.P",  2),
+    ("금",       "XAU/USDT:USDT", "XAUUSDT.P", 2),
     ("나스닥",   "QQQ/USDT:USDT", "QQQUSDT.P", 2),
     ("코스피",   "EWY/USDT:USDT", "EWYUSDT.P", 2),
-    ("금",       "XAU/USDT:USDT", "XAUUSDT.P", 2),
-    ("오일",     "CL/USDT:USDT",  "CLUSDT.P",  2),
     ("비트코인", "BTC/USDT:USDT", "BTCUSDT.P", 0),
 ]
 
