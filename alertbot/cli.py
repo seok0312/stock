@@ -102,17 +102,29 @@ def main(argv=None):
         except Exception as e:
             print(f"  뉴스 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
-    if slot == "07" and not args.no_sectors:
-        try:
-            import sectors as sec_mod
-            us_sectors = sec_mod.fetch_us_sectors()
-            kr_impact = sec_mod.kr_impact(us_sectors, win["rows"])
-        except Exception as e:
-            print(f"  섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
+    kr_upjong, kr_themes = None, None
+    if not args.no_sectors:
+        if slot == "07":
+            # 미국장이 막 끝난 시점 → 전일 미국 섹터가 근거
+            try:
+                import sectors as sec_mod
+                us_sectors = sec_mod.fetch_us_sectors()
+                kr_impact = sec_mod.kr_impact(us_sectors, win["rows"])
+            except Exception as e:
+                print(f"  미국섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
+        else:
+            # 14:30 / 19시 → 미국장이 닫혀 있으므로 장중 한국 데이터로 판단
+            try:
+                import kr_sectors as krs
+                kr_upjong = krs.fetch_upjong()
+                kr_themes = krs.fetch_themes()
+            except Exception as e:
+                print(f"  한국섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
-                       flows=fl, footer=f"유의미 변동 {sig}/5종 · 자동수집")
+                       flows=fl, kr_upjong=kr_upjong, kr_themes=kr_themes,
+                       footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)
     return 0
 

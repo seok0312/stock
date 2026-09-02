@@ -13,6 +13,9 @@ import ccxt
 
 KST = timezone(timedelta(hours=9))
 
+# 이 값 이상 움직이면 '유의미 변동'으로 보고 뉴스를 붙인다.
+SIGNIFICANT_PCT = 1.0
+
 # 표시명 → (ccxt 심볼, 트레이딩뷰 티커, 소수자리)
 INSTRUMENTS = [
     ("오일",     "CL/USDT:USDT",  "CLUSDT.P",  2),
@@ -82,7 +85,7 @@ def fetch_window(slot: str, now: datetime | None = None):
         out.append({
             "name": name, "symbol": sym, "tv": tv, "decimals": dp,
             "start_px": p0, "end_px": p1, "chg_pct": chg,
-            "significant": (chg is not None and abs(chg) >= 0.5),
+            "significant": (chg is not None and abs(chg) >= SIGNIFICANT_PCT),
         })
         time.sleep(0.05)
     return {"slot": slot, "label": SLOTS[slot]["label"], "start": start, "end": end, "rows": out}

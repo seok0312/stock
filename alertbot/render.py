@@ -66,6 +66,29 @@ def section_us_sectors(sectors):
     return "\n".join(lines)
 
 
+def section_kr_sectors(upjong, themes):
+    """장중 한국 업종 강약 + 주도 테마.
+
+    14:30 / 19시 슬롯용. 미국장이 닫혀 있어 '전일 미국 섹터' 대신
+    지금 움직이는 한국 데이터로 판단해야 하기 때문이다.
+    """
+    lines = []
+    if upjong and (upjong.get("up") or upjong.get("down")):
+        lines.append("\n🇰🇷 <b>한국 업종</b> <i>(장중)</i>")
+        for x in upjong.get("up", []):
+            lines.append(f"  🔺 <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%")
+        for x in upjong.get("down", []):
+            lines.append(f"  🔻 <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%")
+    if themes:
+        lines.append("\n🎯 <b>주도 테마</b>")
+        for t in themes:
+            d3 = f" <i>(3일 {t['d3_pct']:+.2f}%)</i>" if t.get("d3_pct") is not None else ""
+            lines.append(f"  · <b>{esc(t['name'])}</b> {t['change_pct']:+.2f}%{d3}")
+            if t.get("leaders"):
+                lines.append(f"      {esc(', '.join(t['leaders']))}")
+    return "\n".join(lines)
+
+
 def section_kr_impact(impacts):
     """impacts: [{kr_sector, driver, tickers, note}] — '원인 → 결과' 순."""
     if not impacts:
@@ -124,10 +147,11 @@ def section_flows(fl):
 
 
 def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
-          flows=None, footer=None):
+          flows=None, kr_upjong=None, kr_themes=None, footer=None):
     parts = [header(win), section_quotes(win)]
     for s in (section_flows(flows),
               section_news(news or {}),
+              section_kr_sectors(kr_upjong, kr_themes),
               section_us_sectors(us_sectors or []),
               section_kr_impact(kr_impact or []),
               section_leaders(leaders or [])):
