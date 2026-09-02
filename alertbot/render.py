@@ -109,10 +109,10 @@ def section_flows(fl):
         f = m.get("flow_eok") or {}
         lines.append(f"  <b>{esc(m['label'])}</b> {amt:,.2f}조")
         parts = []
-        for k in ("개인", "외국인", "기관"):
+        for k in ("개인", "외국인", "기관", "기타법인"):
             v = f.get(k)
             if v is not None:
-                parts.append(f"{esc(k)} {v:+,.0f}억")
+                parts.append(f"{esc(k)} {v/1e4:+,.2f}조")   # 네이버 순매수 단위 억원 → 조
         if parts:
             lines.append("    " + " · ".join(parts))
     tot = fl.get("total_amount_jo") or 0

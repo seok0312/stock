@@ -73,7 +73,7 @@ py -3.11 cli.py --slot 07 --force      # 휴장일에도 강제 실행
 
 ## 환경변수
 
-`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — `alertbot/.env` → `stock/.env` →
+`TELEGRAM_BOT_TOKEN`, `ALERTBOT_CHAT_ID`(선택) 또는 `TELEGRAM_CHAT_ID` — `alertbot/.env` → `stock/.env` →
 `/opt/upbit_bot/.env` 순으로 탐색. 없으면 콘솔 출력으로 대체된다.
 
 ## 5. 시장 거래대금 (전 슬롯)
@@ -103,6 +103,28 @@ py -3.11 cli.py --slot 07 --force      # 휴장일에도 강제 실행
   (세션 쿠키를 받아도 동일). 그래서 투자자 4분류 중 **기타법인을 수집하지 못한다**.
 - **키움 REST**: 앱키가 특정 단말에 묶여 있어 `8050 지정단말기 인증 실패`
 - **한경/팍스넷 투자주체**: JS 렌더링이라 `<table>` 부재
+
+## 서버 배포
+
+```bash
+./deploy.sh          # scp + md5 대조
+```
+
+서버 `/opt/alertbot/`, 실행 래퍼 `run.sh`, 로그 `alertbot.log`.
+
+**cron (서버 TZ=UTC, 한국은 서머타임 없어 KST=UTC+9 고정)**
+
+```
+0  22 * * 0-4 /opt/alertbot/run.sh 07   >> /opt/alertbot/alertbot.log 2>&1   # KST 07:00
+30 5  * * 1-5 /opt/alertbot/run.sh 1430 >> /opt/alertbot/alertbot.log 2>&1   # KST 14:30
+0  10 * * 1-5 /opt/alertbot/run.sh 19   >> /opt/alertbot/alertbot.log 2>&1   # KST 19:00
+```
+
+07 슬롯은 UTC 전날 22:00이라 **UTC 요일이 일~목(0-4)** 인 점에 주의.
+`CRON_TZ` 를 쓰지 않은 이유: 같은 crontab의 기존 운영 job(watchdog/drain)에
+영향을 줄 위험을 피하기 위해 UTC 시각으로 직접 계산했다.
+
+휴장일은 `cli.py` 의 `is_kr_trading_day()` 가 판정해 스스로 스킵한다.
 
 ## TODO
 

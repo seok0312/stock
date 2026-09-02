@@ -63,7 +63,9 @@ def _chunks(text: str, limit: int = LIMIT):
 def send(text: str, token: str | None = None, chat_id: str | None = None,
          dry_run: bool = False) -> bool:
     token = token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
+    # 전용 채널을 쓰고 싶으면 ALERTBOT_CHAT_ID 를 지정. 없으면 기존 채널로.
+    chat_id = (chat_id or os.environ.get("ALERTBOT_CHAT_ID")
+               or os.environ.get("TELEGRAM_CHAT_ID", ""))
     parts = _chunks(text)
     if dry_run or not token or not chat_id:
         tag = "[DRY-RUN]" if dry_run else "[미설정 - 콘솔 출력]"
