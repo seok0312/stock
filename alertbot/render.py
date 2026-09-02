@@ -153,7 +153,9 @@ def section_leaders(ld, title="🎯 <b>당일 주도주 후보</b>"):
         for k, lab in (("외국인", "외국인"), ("기관", "기관")):
             v = r.get(k)
             if v is not None:
-                sub.append(f"{lab} {v:+,.0f}주")
+                sub.append(f"{lab} {v:+,.0f}억")
+            elif r.get(k + "주") is not None:       # 금액 조회 실패 시 수량으로 대체
+                sub.append(f"{lab} {r[k + '주']:+,.0f}주")
         if r.get("프로그램") is not None:
             sub.append(f"프로그램 {r['프로그램']:+,.0f}억")
         if sub:

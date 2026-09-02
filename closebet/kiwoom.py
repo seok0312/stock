@@ -176,9 +176,14 @@ class KiwoomClient:
         return parse_view_rank(data)
 
     # ---- ka10059 종목별투자자기관별 (외국인·기관 순매수) ----
-    def stock_flow(self, code: str, dt: str) -> dict | None:
-        """최근 거래일 외국인·기관·개인 순매수(수량, 단주). dt=YYYYMMDD. 실패 시 None."""
-        params = {"dt": dt, "stk_cd": str(code).zfill(6), "amt_qty_tp": "2", "trde_tp": "0", "unit_tp": "1"}
+    def stock_flow(self, code: str, dt: str, amount: bool = False) -> dict | None:
+        """최근 거래일 외국인·기관·개인 순매수. dt=YYYYMMDD. 실패 시 None.
+
+        amount=False(기본): 수량(단주)  — 기존 동작 유지
+        amount=True       : 금액(백만원) — 실측 확인: 수량 x 주가와 일치
+        """
+        params = {"dt": dt, "stk_cd": str(code).zfill(6),
+                  "amt_qty_tp": "1" if amount else "2", "trde_tp": "0", "unit_tp": "1"}
         data, _ = self.request("ka10059", params, endpoint="/api/dostk/stkinfo")
         rows = _extract_list(data, prefer="stk_invsr_orgn")
         if not rows:
