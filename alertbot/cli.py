@@ -19,6 +19,13 @@ import notify
 KST = timezone(timedelta(hours=9))
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+ENV_PATHS = (
+    os.path.join(HERE, ".env"),
+    os.path.join(HERE, "..", ".env"),
+    os.path.join(HERE, "..", "..", "upbit_bot", ".env"),   # 로컬: 텔레그램 토큰이 여기 있다
+    "/opt/upbit_bot/.env",                                  # 서버
+)
+
 
 def pick_slot(now: datetime) -> str:
     """현재 시각에서 가장 가까운(이미 지난) 슬롯."""
@@ -64,9 +71,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     sys.stdout.reconfigure(encoding="utf-8")
-    notify.load_env(os.path.join(HERE, ".env"),
-                    os.path.join(HERE, "..", ".env"),
-                    "/opt/upbit_bot/.env")
+    notify.load_env(*ENV_PATHS)
 
     now = datetime.now(KST)
     slot = pick_slot(now) if args.slot == "auto" else args.slot
