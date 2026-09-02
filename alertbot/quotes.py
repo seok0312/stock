@@ -54,11 +54,49 @@ def exchange():
     return _ex
 
 
+# ── 거래일 판정 (앵커 선택용) ──────────────────────────────────────
+_TRADING_CACHE = {"dates": None, "last": None}
+
+
+def _load_trading_dates():
+    """최근 90일 한국 거래일 집합. KS11 에 데이터가 있으면 그날은 확실히 거래일."""
+    if _TRADING_CACHE["dates"] is not None:
+        return _TRADING_CACHE["dates"], _TRADING_CACHE["last"]
+    dates, last = set(), None
+    try:
+        import FinanceDataReader as fdr
+        start = (datetime.now(KST) - timedelta(days=90)).strftime("%Y-%m-%d")
+        ks = fdr.DataReader("KS11", start)
+        dates = {d.date() for d in ks.index}
+        last = max(dates) if dates else None
+    except Exception:
+        pass
+    _TRADING_CACHE["dates"], _TRADING_CACHE["last"] = dates, last
+    return dates, last
+
+
+def is_trading_date(d) -> bool:
+    """d(date)가 한국 거래일인가.
+
+    과거는 KS11 실적으로 정확히 판정한다(공휴일·임시휴장 모두 반영).
+    KS11 에 아직 안 잡힌 당일/미래는 평일 여부로 근사한다 — 앵커 탐색은
+    과거를 향하므로 이 근사가 문제되는 건 '당일 08:00 앵커'뿐이고,
+    그날이 휴장이면 알림 자체가 스킵되므로 영향이 없다.
+    """
+    dates, last = _load_trading_dates()
+    if last is not None and d <= last:
+        return d in dates
+    return d.weekday() < 5
+
+
 def window_bounds(slot: str, now=None):
     """(구간 시작, 구간 끝) KST aware datetime.
 
-    끝  = 슬롯 발송시각(지금을 넘으면 하루 당김 — 정시보다 일찍 돌려도 어긋나지 않게)
-    시작 = 그 끝보다 '엄격히 앞선' 가장 가까운 앵커(08:00 / 15:30 / 20:00)
+    끝  = 슬롯 발송시각(지금을 넘으면 하루 당김)
+    시작 = 그 끝보다 앞선 가장 가까운 앵커. 단 앵커는 **거래일에만** 놓는다.
+           금요일 20:00 → 월요일 08:00 처럼 휴장 구간을 통째로 건너뛰기 위함이다.
+           5종 전부 24시간 거래되는 퍼페추얼이라 그 사이 미국장·BTC·오일
+           움직임이 모두 이 구간에 포함된다.
     """
     now = now or datetime.now(KST)
     h, m = SLOTS[slot]["at"]
@@ -66,15 +104,17 @@ def window_bounds(slot: str, now=None):
     if end > now:
         end -= timedelta(days=1)
 
-    cands = []
-    for day_off in (0, -1):
-        d = end + timedelta(days=day_off)
-        for ah, am in ANCHORS:
-            a = d.replace(hour=ah, minute=am, second=0, microsecond=0)
-            if a < end:
-                cands.append(a)
-    start = max(cands)
-    return start, end
+    for back in range(0, 15):            # 최장 연휴 대비 15일 역행
+        d = (end - timedelta(days=back)).date()
+        if not is_trading_date(d):
+            continue
+        cands = [end.replace(year=d.year, month=d.month, day=d.day,
+                             hour=ah, minute=am) for ah, am in ANCHORS]
+        cands = [a for a in cands if a < end]
+        if cands:
+            return max(cands), end
+    # 전부 실패하면 달력 기준으로 폴백(데이터 소스 장애 등)
+    return end - timedelta(hours=12), end
 
 
 def _close_at(symbol: str, ts: datetime, ex=None):
