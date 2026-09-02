@@ -75,17 +75,28 @@ def send(text: str, token: str | None = None, chat_id: str | None = None,
                   f"(원문 {len(p)}자 / 보이는길이 {visible_len(p)}) -----\n{p}")
         return True
     ok = True
-    for p in parts:
+    for i, p in enumerate(parts, 1):
         try:
             r = requests.post(TG_API.format(token=token),
                               json={"chat_id": chat_id, "text": p,
                                     "parse_mode": "HTML",
                                     "disable_web_page_preview": True},
                               timeout=15)
-            if r.status_code != 200:
-                print(f"  텔레그램 실패 {r.status_code}: {r.text[:200]}")
+            j = {}
+            try:
+                j = r.json()
+            except Exception:
+                pass
+            if r.status_code == 200 and j.get("ok"):
+                mid = (j.get("result") or {}).get("message_id")
+                print(f"  전송 OK {i}/{len(parts)} chat={chat_id} msg_id={mid} "
+                      f"({visible_len(p)}자)")
+            else:
+                # 흔한 원인: 봇이 채널 관리자가 아니거나 '메시지 게시' 권한이 꺼짐
+                print(f"  전송 실패 {i}/{len(parts)} HTTP {r.status_code} "
+                      f"chat={chat_id}: {j.get('description') or r.text[:200]}")
                 ok = False
         except Exception as e:
-            print(f"  텔레그램 예외: {e}")
+            print(f"  전송 예외 {i}/{len(parts)}: {type(e).__name__}: {e}")
             ok = False
     return ok
