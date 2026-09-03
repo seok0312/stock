@@ -8,7 +8,7 @@ from notify import esc
 
 WD = ["월", "화", "수", "목", "금", "토", "일"]
 ICON = {"0600": "☀️", "0750": "🌅", "0850": "🔔", "0930": "🟢",
-        "1430": "🔔", "1530": "🏁", "1900": "🌙", "2000": "🌛"}
+        "1430": "🔔", "1630": "🏁", "1900": "🌙", "2000": "🌛"}
 
 
 def _fmt_px(v, dp):
@@ -60,9 +60,12 @@ def section_quotes(win):
             continue
         star = " ★" if r["significant"] else ""
         sign = "🔼" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
+        post = ""
+        if r.get("chg_post") is not None:
+            post = f" <i>(마감후 {r['chg_post']:+.2f}%)</i>"
         lines.append(f"  {sign} <b>{esc(r['name'])}</b> "
                      f"{_fmt_px(r['end_px'], r['decimals'])}"
-                     f"  <b>{r['chg_pct']:+.2f}%</b>{star}")
+                     f"  <b>{r['chg_pct']:+.2f}%</b>{star}{post}")
     return "\n".join(lines)
 
 

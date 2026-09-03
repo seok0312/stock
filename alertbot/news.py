@@ -105,18 +105,22 @@ def fetch_news(asset: str, hours: int = 12, limit: int = 3, start=None, end=None
 def news_for_window(win, limit: int = 2):
     """변동폭 결과에서 significant 자산만 뉴스 수집. {자산명: [...]}
 
-    검색 구간은 변동폭 계산 구간과 정확히 같다(예: 14:30 알람 → 08:00~14:30).
-    그 밖의 기사는 이 변동의 원인이 아니므로 제외한다.
+    검색 구간은 변동폭 계산 구간과 같되 최근 24시간으로 자른다
+    (예: 14:30 알람 → 08:00~14:30, 월요일 06:00 알람 → 58시간이 아니라 최근 24시간).
 
     키는 자산명 그대로다 — 시황 목록 아래에 자산별로 묶어 링크를 붙이므로
     렌더러가 quotes 행의 name 으로 바로 찾을 수 있어야 한다.
     """
+    # 24시간 상한. 앵커가 08/20 두 개뿐이라 연휴 뒤엔 구간이 58시간까지 벌어지는데,
+    # 그만큼 오래된 기사는 오늘 변동의 원인이 아니라 노이즈다.
+    floor = datetime.now(KST) - timedelta(hours=24)
+    start = max(win["start"], floor)
     out = {}
     for r in win["rows"]:
         if not r["significant"]:
             continue
         items = fetch_news(r["name"], limit=limit,
-                           start=win["start"], end=win["end"])
+                           start=start, end=win["end"])
         if items:
             out[r["name"]] = items
     return out

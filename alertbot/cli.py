@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 US_SECTOR_SLOTS = {"0600", "0750", "0850"}
 
 # 주도주는 장중·마감 이후에만 의미가 있다(개장 전엔 전일 데이터).
-LEADER_SLOTS = {"0930", "1430", "1530", "1900", "2000"}
+LEADER_SLOTS = {"0930", "1430", "1630", "1900", "2000"}
 
 ENV_PATHS = (
     os.path.join(HERE, ".env"),

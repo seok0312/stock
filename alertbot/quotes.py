@@ -27,9 +27,14 @@ INSTRUMENTS = [
 
 # 변동폭 기준시점(앵커). 알람 시점에서 '직전에 지난 앵커'까지가 측정 구간이 된다.
 #   08:00  NXT 프리마켓 시작
-#   15:30  정규장 마감
-#   20:00  NXT 마감
-ANCHORS = ((8, 0), (15, 30), (20, 0))
+#   20:00  NXT 애프터마켓 종료
+# 15:30(정규장 마감)은 앵커에서 뺐다. 앵커로 두면 오후 알림의 구간이 15:30~로 잘려
+# 그날 전체 흐름이 안 보인다. 대신 마감 이후 슬롯에서는 '마감후 변동'을 따로 병기한다.
+ANCHORS = ((8, 0), (20, 0))
+
+# 정규장 마감. 이 시각 이후 슬롯은 08:00 기준 변동과 별개로 마감후 변동도 낸다.
+CLOSE_AT = (15, 30)
+POST_CLOSE_SLOTS = {"1630", "1900", "2000"}
 
 # 알람 슬롯: 키 = 발송시각(HHMM), at = (시, 분)
 SLOTS = {
@@ -38,7 +43,7 @@ SLOTS = {
     "0850": {"label": "정규장 개장 전",  "at": (8, 50)},
     "0930": {"label": "정규장 개장 후",  "at": (9, 30)},
     "1430": {"label": "정규장 마감 전",  "at": (14, 30)},
-    "1530": {"label": "정규장 마감",     "at": (15, 30)},
+    "1630": {"label": "마감 집계 후",    "at": (16, 30)},
     "1900": {"label": "NXT 마감 전",    "at": (19, 0)},
     "2000": {"label": "NXT 마감 후",    "at": (20, 0)},
 }
@@ -132,19 +137,29 @@ def _close_at(symbol: str, ts: datetime, ex=None):
 def fetch_window(slot: str, now: datetime | None = None):
     """슬롯 시간창의 5종 변동폭. [{name, tv, start_px, end_px, chg_pct, significant}]"""
     start, end = window_bounds(slot, now)
+    sub = None
+    if slot in POST_CLOSE_SLOTS:
+        c = end.replace(hour=CLOSE_AT[0], minute=CLOSE_AT[1], second=0, microsecond=0)
+        if start < c < end:
+            sub = c
     ex = exchange()
     out = []
     for name, sym, tv, dp in INSTRUMENTS:
         p0 = _close_at(sym, start, ex)
         p1 = _close_at(sym, end, ex)
         chg = (p1 / p0 - 1) * 100 if (p0 and p1) else None
-        out.append({
+        row = {
             "name": name, "symbol": sym, "tv": tv, "decimals": dp,
             "start_px": p0, "end_px": p1, "chg_pct": chg,
             "significant": (chg is not None and abs(chg) >= SIGNIFICANT_PCT),
-        })
+        }
+        if sub:
+            ps = _close_at(sym, sub, ex)
+            row["chg_post"] = (p1 / ps - 1) * 100 if (ps and p1) else None
+        out.append(row)
         time.sleep(0.05)
-    return {"slot": slot, "label": SLOTS[slot]["label"], "start": start, "end": end, "rows": out}
+    return {"slot": slot, "label": SLOTS[slot]["label"], "start": start, "end": end,
+            "sub_start": sub, "rows": out}
 
 
 if __name__ == "__main__":
