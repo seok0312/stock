@@ -195,7 +195,7 @@ def _us_earnings(start: datetime, end: datetime) -> list:
            "Origin": "https://www.nasdaq.com", "Referer": "https://www.nasdaq.com/"}
     out, seen = [], set()
     d = start.date()
-    while d <= end.date() and len(seen) < 5:
+    while d <= end.date() and len(seen) < 9:
         seen.add(d)
         try:
             r = requests.get(NASDAQ_EARN.format(d=d.strftime("%Y-%m-%d")),
@@ -402,7 +402,7 @@ def stars(e) -> str:
 
 
 def brief(events, win, quote_rows=None, sector_names=None, now=None,
-          max_done: int = 3, max_ahead: int = 4, only_high: bool = True) -> dict:
+          max_done: int = 3, max_ahead: int = 5, only_high: bool = True) -> dict:
     """렌더러가 그대로 찍을 수 있는 형태로 가공.
 
     done  — 변동폭 창 안에서 발표된 일정 + 그것이 설명하는 자산·업종
@@ -437,12 +437,22 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
 
     # 예정 목록은 자리가 몇 줄뿐이라 '가까운 순'으로 채우면 유럽 중간지표가
     # 다 차지하고 정작 미국 고용지표가 밀린다. 중요도로 먼저 거른 뒤 시간순 정렬.
-    cand = []
+    # 지표는 48시간, 실적은 7일까지 본다. 실적 날짜는 훨씬 전부터 확정돼 있고
+    # '이번 주에 엔비디아가 있다'는 정보 자체가 포지션 크기를 바꾸기 때문이다.
+    ind_end = now + timedelta(hours=48)
+    earn_end = now + timedelta(days=7)
+    cand, n_earn = [], 0
     for e in ahead_raw:
         high = e.get("vol") == "HIGH"
         if only_high and not high:
             continue
         if e.get("country") not in ("US", "KR", "CN"):   # 코스피에 직접 닿는 곳만
+            continue
+        if e.get("src") == "us_earnings":
+            if e["when"] > earn_end or n_earn >= 2:
+                continue
+            n_earn += 1
+        elif e["when"] > ind_end:
             continue
         cand.append((not high, e["when"], e["when"] <= open_at, e))
     # 같은 시각·같은 나라는 한 번의 발표다(고용보고서 = 비농업고용 + 시간당임금 + 실업률).

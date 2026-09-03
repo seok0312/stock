@@ -126,7 +126,7 @@ def main(argv=None):
             print(f"  뉴스 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
     kr_upjong, kr_themes, kr_when = None, None, None
-    us_leaders, topic_news = {}, {}
+    us_leaders = {}
     if not args.no_sectors:
         if slot in US_SECTOR_SLOTS:
             # 미국장이 막 끝났고 한국 데이터는 아직 전일치 → 미국 섹터가 근거
@@ -141,14 +141,6 @@ def main(argv=None):
                     ld = sec_mod.sector_leaders(nm, perf)
                     if ld:
                         us_leaders[nm] = ld
-                if not args.no_news:
-                    import news as nm_mod
-                    for nm in strong:
-                        tks = [x["ticker"] for x in us_leaders.get(nm, [])]
-                        it = nm_mod.topic_news(nm, "us", limit=1, tickers=tks,
-                                               start=win["start"], end=win["end"])
-                        if it:
-                            topic_news[nm] = it
             except Exception as e:
                 print(f"  미국섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
         else:
@@ -159,38 +151,16 @@ def main(argv=None):
                 kr_themes = krs.fetch_themes()
                 # 정규장(09:00~15:30) 안이면 '장중', 그 뒤면 '종가 기준'
                 kr_when = "장중" if slot in ("0930", "1430") else "종가 기준"
-                if not args.no_news:
-                    import news as nm_mod
-                    # 강세 업종·테마에만 원인 뉴스를 건다(약세는 참고용이라 이름만).
-                    names = [x["name"] for x in (kr_upjong or {}).get("up", [])[:3]]
-                    names += [x["name"] for x in (kr_themes or {}).get("up", [])[:3]]
-                    for nm in names:
-                        it = nm_mod.topic_news(nm, "kr", limit=1,
-                                               start=win["start"], end=win["end"])
-                        if it:
-                            topic_news[nm] = it
             except Exception as e:
                 print(f"  한국섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
-    ld, leader_news = None, {}
+    ld = None
     if slot in LEADER_SLOTS and not args.no_leaders:
         try:
             import leaders as ld_mod
             ld = ld_mod.fetch_leaders(top=8)
         except Exception as e:
             print(f"  주도주 수집 실패(계속 진행): {type(e).__name__}: {e}")
-        if ld and not args.no_news:
-            # 왜 오르는지가 종가베팅 판단의 핵심이라 종목별 기사를 붙인다.
-            # 검색 구간은 시황과 동일하게 변동폭 계산 구간으로 제한한다.
-            try:
-                import news as nm_mod
-                for r in (ld.get("rows") or [])[:6]:
-                    it = nm_mod.topic_news(r["종목명"], "kr", limit=1,
-                                           start=win["start"], end=win["end"])
-                    if it:
-                        leader_news[r["종목명"]] = it
-            except Exception as e:
-                print(f"  주도주 뉴스 실패(계속 진행): {type(e).__name__}: {e}")
 
     ev_ctx, evs = None, []
     if not args.no_events:
@@ -199,8 +169,10 @@ def main(argv=None):
         try:
             import events as ev_mod
             names = [x["name"] for x in (kr_upjong or {}).get("up", [])] +                     [x["name"] for x in (kr_themes or {}).get("up", [])]
+            # 실적은 며칠 전부터 알아야 의미가 있어 앞쪽 지평을 넉넉히 잡는다.
+            # 실제 표시 범위는 events.brief() 가 종류별로 다시 자른다.
             evs = ev_mod.collect(win["start"] - timedelta(hours=2),
-                                 now + timedelta(hours=36))
+                                 now + timedelta(days=8))
             ev_ctx = ev_mod.brief(evs, win, quote_rows=win["rows"],
                                   sector_names=names, now=now)
             print(f"  일정 {len(evs)}건 · 구간내 {ev_ctx['n_done']} · "
@@ -210,8 +182,8 @@ def main(argv=None):
 
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
-                       leaders=ld, us_leaders=us_leaders, topic_news=topic_news,
-                       leader_news=leader_news, events=ev_ctx,
+                       leaders=ld, us_leaders=us_leaders,
+                       events=ev_ctx,
                        flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)
