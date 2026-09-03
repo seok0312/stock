@@ -224,6 +224,13 @@ def _flow_table(groups):
     """
     KEYS = ("개인", "외국인", "기관", "기타법인", "비차익")
 
+    # 단위 자동 선택. 프리마켓(08:50)엔 수백억 단위라 조원으로 찍으면 전부
+    # -0.1/+0.0 으로 뭉개진다. 최대값이 1조 미만이면 억원으로 보여준다.
+    vals = [abs(v) for _, acc in groups for v in (acc or {}).values() if v is not None]
+    use_jo = (max(vals, default=0) >= 10000)
+    unit = "조원" if use_jo else "억원"
+    fmt = (lambda v: f"{v/1e4:+.1f}") if use_jo else (lambda v: f"{v:+,.0f}")
+
     def lab(s, n=4):
         """라벨을 항상 n개의 전각 글자 폭으로 맞춘다.
 
@@ -236,13 +243,13 @@ def _flow_table(groups):
         return "　" * left + s + "　" * (gap - left)
 
     titles = [lab("구분")] + [g[0] for g in groups]
-    rows = [[lab(k)] + [("-" if (acc or {}).get(k) is None else f"{acc[k]/1e4:+.1f}")
+    rows = [[lab(k)] + [("-" if (acc or {}).get(k) is None else fmt(acc[k]))
                         for _, acc in groups] for k in KEYS]
     w = [max(_dw(r[i]) for r in [titles] + rows) + 2 for i in range(len(titles))]
     out = ["".join(_pad(t, w[i], "c") for i, t in enumerate(titles)),
            "-" * sum(w)]
     out += ["".join(_pad(c, w[i], "c") for i, c in enumerate(r)) for r in rows]
-    return "<pre>" + esc("\n".join(out)) + "</pre>"
+    return "<pre>" + esc("\n".join(out)) + "</pre>", unit
 
 
 def _exchange_rows(market: dict):
@@ -342,8 +349,9 @@ def section_flows(fl, cmp=None):
     groups = [(title, merged(names)) for title, names in FLOW_GROUPS]
     if any(g[1] for g in groups):
         fsrc = "키움 KRX+NXT" if fl.get("flow_src") == "kiwoom" else "네이버 KRX"
-        lines.append(f"\n💵 <b>순매수</b> <i>(조원 · {esc(fsrc)})</i>")
-        lines.append(_flow_table(groups))
+        tbl, unit = _flow_table(groups)
+        lines.append(f"\n💵 <b>순매수</b> <i>({esc(unit)} · {esc(fsrc)})</i>")
+        lines.append(tbl)
 
         note = []
         for key, name in (("foreign", "외국인"), ("inst", "기관"),
@@ -361,8 +369,9 @@ def section_flows(fl, cmp=None):
 
         ex = _exchange_rows(rows.get("코스피") or {})
         if ex:
-            lines.append("\n🏛 <b>거래소별</b> <i>(코스피 현물, 조원)</i>")
-            lines.append(_flow_table(ex))
+            tbl2, unit2 = _flow_table(ex)
+            lines.append(f"\n🏛 <b>거래소별</b> <i>(코스피 현물, {esc(unit2)})</i>")
+            lines.append(tbl2)
             lines.append("  · <i>정규장=KRX 09:00~15:30 · NXT=08:00~08:50, "
                          "09:00~15:20, 15:40~20:00</i>")
     return "\n".join(lines)
