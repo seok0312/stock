@@ -57,9 +57,11 @@ def fetch_market(code: str) -> dict | None:
     if v is not None:
         amt_won = v * 1e6 if "백만" in str(raw) else v      # '백만' 단위 표기
 
-    d = j.get("dealTrendInfo") or {}
-    # 순매수 단위는 억원. (검증: 개인 순매수/거래대금 ≈ 15% → 억원이 맞다.
-    #  백만원으로 보면 0.2% 로 비현실적)
+    d = fetch_trend(code) or (j.get("dealTrendInfo") or {})
+    # 순매수 단위는 억원. 2026-09-03 마감 실측으로 확정:
+    #   FUT  개인 -3,768 / 외국인 +8,076 / 기관 -3,229  = 키움 0780 선물과 동일
+    #   화면의 계약수(-1,450/+3,077/-1,211) x 1,029.15p x 25만원 과도 오차 1~6% 일치
+    # 코스피·코스닥은 키움 ka10051 stex=1(KRX) 과 원 단위까지 같다.
     flow = {"개인": _num(d.get("personalValue")),
             "외국인": _num(d.get("foreignValue")),
             "기관": _num(d.get("institutionalValue"))}
@@ -78,6 +80,22 @@ def fetch_market(code: str) -> dict | None:
                         "비차익": _num(p.get("indexBiDifferenceReal")),
                         "합계": _num(p.get("indexTotalReal"))},
     }
+
+
+TREND = "https://m.stock.naver.com/api/index/{code}/trend"
+
+
+def fetch_trend(code: str) -> dict | None:
+    """투자자별 순매수(억원). 네이버 선물 화면이 쓰는 바로 그 엔드포인트다.
+
+    integration 응답 안의 dealTrendInfo 와 같은 값이지만, 장중에 선물 쪽이
+    잠정치로 다르게 나온 적이 있어(2026-09-03 16:07 실측) 화면과 같은 경로를 직접 쓴다.
+    """
+    try:
+        r = requests.get(TREND.format(code=code), headers=UA, timeout=15)
+        return r.json() if r.status_code == 200 else None
+    except Exception:
+        return None
 
 
 def fetch_all() -> dict:
@@ -201,6 +219,15 @@ def summary(short: int = 5, long: int = 20):
     return cur
 
 
+# 순매수 소스. "kiwoom" 이면 현물(코스피·코스닥)만 키움 KRX+NXT 통합으로 덮어쓴다.
+# 선물은 어느 쪽이든 네이버다 — 넥스트레이드는 상장주권만 취급하고 파생상품은
+# 다루지 않으므로 선물은 KRX 가 곧 시장 전체다. 즉 현물 통합 + 선물 KRX 조합은
+# 둘 다 '해당 상품의 시장 전체'라서 범위가 어긋나지 않는다.
+# "naver" 로 두면 전부 네이버(=KRX 만)로 통일된다. 대신 현물에서 NXT 가 빠진다
+# (2026-09-03 마감 코스피 외국인: KRX -4,232억 vs 통합 -1,836억).
+FLOW_SOURCE = "kiwoom"
+
+
 def apply_kiwoom(cur: dict) -> str:
     """순매수·프로그램을 키움(KRX+NXT 통합) 값으로 덮어쓴다. 반환: 실제 사용한 소스명.
 
@@ -209,6 +236,8 @@ def apply_kiwoom(cur: dict) -> str:
     키움이 실패하면 네이버 값을 그대로 두고 'naver' 를 반환한다.
     """
     cur["flow_src"] = "naver"
+    if FLOW_SOURCE != "kiwoom":
+        return "naver"
     try:
         import kflows
         k = kflows.fetch()

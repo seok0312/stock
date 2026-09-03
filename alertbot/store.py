@@ -162,9 +162,8 @@ def compare(slot: str, fl: dict, short: int = 5, long: int = 20,
     if per:
         out["amount_market"] = per
 
-    # 브리핑 표와 같은 대상(코스피 현물)으로 비교한다. 선물은 신뢰할 수 있는
-    # 금액 소스가 없어 표에서 뺐으므로 z-score 도 현물만 본다.
-    SPOT = ["코스피"]
+    # 브리핑 표와 같은 조합(코스피 현물 + 코스피200 선물)으로 비교한다.
+    SPOT = ["코스피", "선물"]
     items = [("외국인", "foreign", lambda r: _flow_of(r, SPOT, "외국인")),
              ("기관", "inst", lambda r: _flow_of(r, SPOT, "기관")),
              ("개인", "indiv", lambda r: _flow_of(r, SPOT, "개인")),
