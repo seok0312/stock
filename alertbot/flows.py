@@ -163,32 +163,38 @@ def history(days: int = 20, exclude_partial: bool = True, include_futures: bool 
     return df.tail(days) / JO
 
 
-def summary(days: int = 20):
-    """현재 거래대금 + 과거 평균 대비 온도.
+def summary(short: int = 5, long: int = 20):
+    """현재 거래대금 + 종가 완결일 평균 대비(폴백용).
 
-    ref        : 전체 합계 기준 (선물 포함)
-    ref_market : 시장별({선물,코스피,코스닥}) 기준 — 종가 완결일 평균이라
-                 장중 슬롯에서는 store 의 '같은 시각' 비교가 있으면 그쪽이 우선이다.
+    store 에 같은 시각 표본이 쌓이기 전까지 쓰는 경로다.
+    5일(단기 국면)과 20일(평상시)을 함께 낸다.
     """
     cur = fetch_all()
-    h = history(days, include_futures=True)
+    h = history(long, include_futures=True)
     ref, ref_market = None, {}
     if h is not None and len(h):
-        avg = float(h["합계"].mean())
+        hs = h.tail(short)
         today = sum(m["amount_won"] for m in cur["rows"]
                     if not m.get("error") and m["amount_won"]) / JO
-        ref = {"avg_jo": avg, "today_jo": today,
-               "vs_avg_pct": (today / avg - 1) * 100 if avg else None,
-               "days": len(h), "with_futures": "선물" in h.columns}
+        a_s, a_l = float(hs["합계"].mean()), float(h["합계"].mean())
+        ref = {"today_jo": today, "with_futures": "선물" in h.columns,
+               "avg_short": a_s, "n_short": len(hs),
+               "pct_short": (today / a_s - 1) * 100 if a_s else None,
+               "avg_long": a_l, "n_long": len(h),
+               "pct_long": (today / a_l - 1) * 100 if a_l else None}
         for m in cur["rows"]:
             lab = m.get("label")
             if m.get("error") or lab not in h.columns or not m.get("amount_won"):
                 continue
-            a = float(h[lab].mean())
-            if a:
-                ref_market[lab] = {"avg_jo": a, "today_jo": m["amount_won"] / JO,
-                                   "pct": (m["amount_won"] / JO / a - 1) * 100,
-                                   "days": len(h)}
+            t = m["amount_won"] / JO
+            s_avg, l_avg = float(hs[lab].mean()), float(h[lab].mean())
+            d = {"today_jo": t}
+            if s_avg:
+                d["pct_short"] = (t / s_avg - 1) * 100
+            if l_avg:
+                d["pct_long"] = (t / l_avg - 1) * 100
+            if len(d) > 1:
+                ref_market[lab] = d
     cur["ref"] = ref
     cur["ref_market"] = ref_market
     return cur

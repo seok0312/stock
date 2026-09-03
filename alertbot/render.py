@@ -223,8 +223,8 @@ def _flow_table(groups, cmp_map):
             return "-"
         txt = f"{val/1e4:+.1f}조"
         c = cmp_map.get(key) if (key and first) else None
-        if c and c.get("avg") is not None:
-            d = (val - c["avg"]) / 1e4
+        if c and c.get("avg_short") is not None:
+            d = (val - c["avg_short"]) / 1e4
             txt += f" {'▲' if d >= 0 else '▼'}{abs(d):.1f}"
         return txt
 
@@ -256,14 +256,12 @@ MARKET_ORDER = ("선물", "코스피", "코스닥")
 
 
 def section_flows(fl, cmp=None):
-    """거래대금(시장별 20일 대비 증감 포함) + 순매수(비차익 포함).
+    """거래대금 + 순매수 표.
 
-    cmp: store.compare() 결과. 같은 슬롯(같은 시각) 과거와 비교한다.
-         장중 값은 '그 시각까지의 누적'이라 완결된 하루 평균과 비교하면
-         늘 작게 나온다. 표본이 쌓이기 전에는 종가평균 비교로 폴백한다.
-    '기타법인*'은 -(개인+외국인+기관) 으로 유도. 순매수 총합은 항등적으로 0이라
-    이 값 = 기타법인 + 기타외국인이고, 키움 실측 대조 오차는 0.4%였다.
-    '비차익'은 주체가 아니라 거래 방식(바스켓) 축이라 위 4개와 중복 집계된다.
+    비교 기준 두 개를 함께 쓴다:
+      5일  — 증감률(%). 종가베팅은 1일 지평이라 최근 국면이 기준이 된다.
+      20일 — z-score. 표준편차를 5개로 추정하면 오차가 커 이상치 판정은 표본이 필요.
+    store 의 같은 시각 표본이 있으면 그쪽을, 없으면 종가 완결일 평균으로 폴백한다.
     """
     if not fl or not fl.get("rows"):
         return ""
@@ -278,30 +276,28 @@ def section_flows(fl, cmp=None):
         if not m:
             continue
         amt = (m.get("amount_won") or 0) / 1e12
-        # 같은 시각 비교가 있으면 우선, 없으면 종가평균 비교
-        d = per_slot.get(lab) or per_day.get(lab)
+        d = per_slot.get(lab) or per_day.get(lab) or {}
+        p = d.get("pct_short")
         tag = ""
-        if d and d.get("pct") is not None:
-            arrow = "🔺" if d["pct"] > 0 else ("🔽" if d["pct"] < 0 else "▪️")
-            tag = f" <i>({arrow}{abs(d['pct']):.0f}%)</i>"
+        if p is not None:
+            tag = f" <i>({'🔺' if p > 0 else '🔽'}{abs(p):.0f}%)</i>"
         lines.append(f"  · <b>{esc(lab)}</b> {amt:,.0f}조{tag}")
     for m in fl["rows"]:
         if m.get("error"):
             lines.append(f"  · {esc(m['label'])} — 조회 실패")
     lines.append(f"  ── <b>합계 {(fl.get('total_amount_jo') or 0):,.0f}조</b>")
 
-    ca = cmp.get("amount")
-    if ca and ca.get("pct") is not None:
-        lines.append(f"  <i>같은 시각 {ca['n']}일평균 대비 {ca['pct']:+.0f}% "
-                     f"{_heat(ca['pct'])}</i>")
-    else:
-        ref = fl.get("ref")
-        if ref and ref.get("vs_avg_pct") is not None:
-            p = ref["vs_avg_pct"]
-            lines.append(f"  <i>{ref['days']}일 종가평균 대비 {p:+.0f}% {_heat(p)}</i>")
+    a = cmp.get("amount") or fl.get("ref") or {}
+    seg = []
+    if a.get("pct_short") is not None:
+        seg.append(f"5일 {a['pct_short']:+.0f}% {_heat(a['pct_short'])}")
+    if a.get("pct_long") is not None:
+        seg.append(f"20일 {a['pct_long']:+.0f}% {_heat(a['pct_long'])}")
+    if seg:
+        src = "같은 시각" if cmp.get("amount") else "종가"
+        lines.append(f"  <i>{src}평균 대비 · " + " · ".join(seg) + "</i>")
 
     KEYS = ("개인", "외국인", "기관", "기타*")
-    LABEL = {"개인": "개인", "외국인": "외국인", "기관": "기관", "기타*": "기타법인*"}
 
     def merged(names):
         acc, seen = {k: 0.0 for k in KEYS}, False
@@ -323,23 +319,22 @@ def section_flows(fl, cmp=None):
     groups = [("코스피+선물", merged(["코스피", "선물"])),
               ("코스닥", merged(["코스닥"]))]
     if any(g[1] for g in groups):
-        lines.append("\n💵 <b>순매수</b> <i>(조원, ▲▼는 같은 시각 평균 대비)</i>")
+        lines.append("\n💵 <b>순매수</b> <i>(조원, ▲▼는 5일평균 대비)</i>")
         lines.append(_flow_table(groups, cmp))
 
         note = []
         for key, name in (("foreign", "외국인"), ("inst", "기관"),
                           ("indiv", "개인"), ("nonarb", "비차익")):
             c = cmp.get(key)
-            if not c:
+            if not c or c.get("z") is None:
                 continue
-            z = c.get("z") or 0
-            if abs(z) < 1.0:
+            if abs(c["z"]) < 1.0:
                 continue
-            verb = "대량 순매수" if c["today"] > c["avg"] else "대량 순매도"
-            note.append(f"{esc(name)} <i>(같은 시각 평균 {_flow_fmt(c['avg'])}, "
-                        f"{z:+.1f}σ {verb})</i>")
+            verb = "대량 순매수" if c["today"] > c.get("avg_long", 0) else "대량 순매도"
+            note.append(f"{esc(name)} <i>({c['z']:+.1f}σ {verb})</i>")
         if note:
-            lines.append("  ⚡ " + " / ".join(note))
+            lines.append(f"  ⚡ " + " / ".join(note) +
+                         f" <i>· {cmp.get('n_long', 0)}일 기준</i>")
         lines.append("  <i>* 기타법인은 나머지 합으로 유도 (오차 0.4%) · "
                      "비차익은 거래방식 축이라 위 4개와 중복 집계</i>")
     return "\n".join(lines)
