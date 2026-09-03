@@ -125,6 +125,7 @@ def main(argv=None):
             print(f"  뉴스 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
     kr_upjong, kr_themes, kr_when = None, None, None
+    us_leaders, topic_news = {}, {}
     if not args.no_sectors:
         if slot in US_SECTOR_SLOTS:
             # 미국장이 막 끝났고 한국 데이터는 아직 전일치 → 미국 섹터가 근거
@@ -132,6 +133,20 @@ def main(argv=None):
                 import sectors as sec_mod
                 us_sectors = sec_mod.fetch_us_sectors()
                 kr_impact = sec_mod.kr_impact(us_sectors, win["rows"])
+                # 강세 섹터에만 주도주·원인뉴스 (뉴스 호출 수를 아끼려 상위 3개)
+                perf = sec_mod.fetch_finviz_perf()
+                strong = [x["sector"] for x in us_sectors if x["change_pct"] > 0][:3]
+                for nm in strong:
+                    ld = sec_mod.sector_leaders(nm, perf)
+                    if ld:
+                        us_leaders[nm] = ld
+                if not args.no_news:
+                    import news as nm_mod
+                    for nm in strong:
+                        tks = [x["ticker"] for x in us_leaders.get(nm, [])]
+                        it = nm_mod.topic_news(nm, "us", hours=24, limit=1, tickers=tks)
+                        if it:
+                            topic_news[nm] = it
             except Exception as e:
                 print(f"  미국섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
         else:
@@ -142,6 +157,15 @@ def main(argv=None):
                 kr_themes = krs.fetch_themes()
                 # 정규장(09:00~15:30) 안이면 '장중', 그 뒤면 '종가 기준'
                 kr_when = "장중" if slot in ("0930", "1430") else "종가 기준"
+                if not args.no_news:
+                    import news as nm_mod
+                    # 강세 업종 상위 2 + 주도 테마 상위 2 만 뉴스를 건다
+                    names = [x["name"] for x in (kr_upjong or {}).get("up", [])[:2]]
+                    names += [t["name"] for t in (kr_themes or [])[:2]]
+                    for nm in names:
+                        it = nm_mod.topic_news(nm, "kr", hours=24, limit=1)
+                        if it:
+                            topic_news[nm] = it
             except Exception as e:
                 print(f"  한국섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
@@ -155,7 +179,8 @@ def main(argv=None):
 
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
-                       leaders=ld, flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
+                       leaders=ld, us_leaders=us_leaders, topic_news=topic_news,
+                       flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)
     return 0

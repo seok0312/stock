@@ -29,6 +29,55 @@ THEMES = [
 ]
 
 
+# finviz 실시간 종목 등락률 (5,916개) — 섹터 주도주 산출에 쓴다
+FINVIZ_PERF = "https://finviz.com/api/map_perf?t=sec_all&st=d1"
+FINVIZ_GROUPS = "https://finviz.com/api/map_perf_groups?t=sec_all&st=d1"
+
+# finviz 는 종목→섹터 매핑을 노출하지 않는다(/api/map*.json 전부 404).
+# 그래서 섹터별 대표 종목을 정의해두고, finviz 등락률로 그중 상위를 뽑는다.
+SECTOR_MEMBERS = {
+    "기술":       ["AAPL","MSFT","NVDA","AVGO","ORCL","CRM","AMD","ADBE","CSCO","ACN","TXN","NOW"],
+    "커뮤니케이션": ["GOOGL","META","NFLX","DIS","CMCSA","TMUS","VZ","T","EA"],
+    "경기소비재":  ["AMZN","TSLA","HD","MCD","NKE","SBUX","LOW","BKNG","TJX","GM","F"],
+    "필수소비재":  ["WMT","PG","KO","PEP","COST","PM","MO","MDLZ","CL","KMB"],
+    "에너지":     ["XOM","CVX","COP","SLB","EOG","PSX","MPC","VLO","OXY","HAL","DVN"],
+    "금융":       ["JPM","V","MA","BAC","WFC","GS","MS","SPGI","AXP","C","BLK"],
+    "헬스케어":   ["LLY","UNH","JNJ","ABBV","MRK","TMO","ABT","PFE","AMGN","BMY","GILD"],
+    "산업재":     ["GE","CAT","RTX","UNP","HON","BA","LMT","UPS","DE","ETN","EMR"],
+    "소재":       ["LIN","SHW","APD","ECL","FCX","NEM","DOW","NUE","VMC","MLM"],
+    "유틸리티":   ["NEE","SO","DUK","CEG","AEP","SRE","D","EXC","XEL","ED"],
+    "리츠":       ["PLD","AMT","EQIX","WELL","SPG","O","CCI","PSA","DLR","VICI"],
+    "반도체":     ["NVDA","TSM","AVGO","AMD","ASML","AMAT","LRCX","KLAC","MU","INTC","ADI","QCOM"],
+    "2차전지":    ["TSLA","ALB","ENPH","PLUG","FSLR","QS"],
+    "방산":       ["RTX","LMT","NOC","GD","BA","LHX","HII","TDG","LDOS"],
+    "바이오":     ["VRTX","REGN","MRNA","BIIB","ALNY","INCY","BMRN","SRPT"],
+    "태양광":     ["FSLR","ENPH","SEDG","RUN","NXT","ARRY"],
+    "조선/해운":  ["ZIM","MATX","KEX","GNK","SBLK"],
+}
+
+
+def fetch_finviz_perf():
+    """finviz 종목별 당일 등락률 {티커: %}. 실패 시 None."""
+    try:
+        r = requests.get(FINVIZ_PERF, headers=UA, timeout=25)
+        if r.status_code != 200:
+            return None
+        n = r.json().get("nodes")
+        return n if isinstance(n, dict) and n else None
+    except Exception:
+        return None
+
+
+def sector_leaders(sector: str, perf: dict, top: int = 3):
+    """섹터 대표 종목 중 finviz 등락률 상위. [{ticker, change_pct}]"""
+    if not perf:
+        return []
+    rows = [{"ticker": t, "change_pct": perf[t]}
+            for t in SECTOR_MEMBERS.get(sector, []) if t in perf]
+    rows.sort(key=lambda x: x["change_pct"], reverse=True)
+    return rows[:top]
+
+
 def _prev_change(sym: str):
     """전일(최근 거래일) 등락률 %. 실패 시 None."""
     try:

@@ -59,33 +59,52 @@ def section_news(news_by_asset):
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-def section_us_sectors(sectors):
-    """전일 미국 섹터 — 시황과 같은 🔺🔻 마커로 통일."""
+def section_us_sectors(sectors, leaders=None, topic_news=None):
+    """전일 미국 섹터 — 시황과 같은 🔺🔻 마커.
+
+    leaders:    {섹터명: [{ticker, change_pct}]}  finviz 종목 등락률 기반 주도주
+    topic_news: {섹터명: [{title, url, source}]}  왜 올랐는지 원인 기사
+    강세 섹터에만 주도주·뉴스를 붙인다(약세는 참고용이라 이름만).
+    """
     if not sectors:
         return ""
     up = [s for s in sectors if s["change_pct"] > 0][:4]
     dn = [s for s in sectors if s["change_pct"] < 0][-3:]
     if not up and not dn:
         return ""
+    leaders = leaders or {}
+    topic_news = topic_news or {}
     lines = ["\n🇺🇸 <b>전일 미국 섹터</b>"]
     for s in up:
-        lines.append(f"  🔺 <b>{esc(s['sector'])}</b> {s['change_pct']:+.2f}%")
+        nm = s["sector"]
+        lines.append(f"  🔺 <b>{esc(nm)}</b> {s['change_pct']:+.2f}%")
+        ld = leaders.get(nm) or []
+        if ld:
+            lines.append("      " + " · ".join(
+                f"{esc(x['ticker'])} {x['change_pct']:+.1f}%" for x in ld))
+        for it in (topic_news.get(nm) or [])[:1]:
+            t = esc(it.get("title", ""))[:90]
+            lines.append(f"      <a href=\"{it.get('url','')}\">{t}</a>")
     for s in reversed(dn):
         lines.append(f"  🔻 <b>{esc(s['sector'])}</b> {s['change_pct']:+.2f}%")
     return "\n".join(lines)
 
 
-def section_kr_sectors(upjong, themes, when="장중"):
-    """장중 한국 업종 강약 + 주도 테마.
+def section_kr_sectors(upjong, themes, when="장중", topic_news=None):
+    """장중 한국 업종 강약 + 주도 테마(+주도주, 원인 뉴스).
 
-    14:30 / 19시 슬롯용. 미국장이 닫혀 있어 '전일 미국 섹터' 대신
-    지금 움직이는 한국 데이터로 판단해야 하기 때문이다.
+    09:30 이후 슬롯용. 미국장이 닫혀 있어 장중 한국 데이터로 판단해야 한다.
+    topic_news: {업종명/테마명: [{title,url,source}]}
     """
     lines = []
+    topic_news = topic_news or {}
     if upjong and (upjong.get("up") or upjong.get("down")):
         lines.append(f"\n🇰🇷 <b>한국 업종</b> <i>({esc(when)})</i>")
         for x in upjong.get("up", []):
             lines.append(f"  🔺 <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%")
+            for it in (topic_news.get(x["name"]) or [])[:1]:
+                lines.append(f"      <a href=\"{it.get('url','')}\">"
+                             f"{esc(it.get('title',''))[:90]}</a>")
         for x in upjong.get("down", []):
             lines.append(f"  🔻 <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%")
     if themes:
@@ -95,6 +114,9 @@ def section_kr_sectors(upjong, themes, when="장중"):
             lines.append(f"  · <b>{esc(t['name'])}</b> {t['change_pct']:+.2f}%{d3}")
             if t.get("leaders"):
                 lines.append(f"      {esc(', '.join(t['leaders']))}")
+            for it in (topic_news.get(t["name"]) or [])[:1]:
+                lines.append(f"      <a href=\"{it.get('url','')}\">"
+                             f"{esc(it.get('title',''))[:90]}</a>")
     return "\n".join(lines)
 
 
@@ -251,14 +273,15 @@ def section_flows(fl, cmp=None):
 
 
 def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
-          flows=None, flows_cmp=None, kr_upjong=None, kr_themes=None, kr_when=None, footer=None):
+          flows=None, flows_cmp=None, kr_upjong=None, kr_themes=None, kr_when=None,
+          us_leaders=None, topic_news=None, footer=None):
     parts = [header(win), section_quotes(win)]
     for s in (section_flows(flows, flows_cmp),
               section_news(news or {}),
-              section_kr_sectors(kr_upjong, kr_themes, kr_when or "장중"),
+              section_kr_sectors(kr_upjong, kr_themes, kr_when or "장중", topic_news),
               section_program(flows),
               section_leaders(leaders),
-              section_us_sectors(us_sectors or []),
+              section_us_sectors(us_sectors or [], us_leaders, topic_news),
               section_kr_impact(kr_impact or []),
               ):
         if s:
