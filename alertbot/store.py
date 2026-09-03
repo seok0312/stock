@@ -29,16 +29,22 @@ def _ensure_dir():
 def build_record(slot: str, fl: dict, now: datetime | None = None) -> dict:
     """flows.summary() 결과 → 저장 레코드."""
     now = now or datetime.now(KST)
-    amount, flow, prog = {}, {}, {}
+    amount, flow, prog, by_ex = {}, {}, {}, {}
     for m in (fl or {}).get("rows", []):
         if m.get("error"):
             continue
         amount[m["label"]] = m.get("amount_won")
         flow[m["label"]] = m.get("flow_eok") or {}
         prog[m["label"]] = m.get("program_eok") or {}
-    return {"ts": now.isoformat(timespec="seconds"),
-            "date": now.strftime("%Y%m%d"), "slot": slot,
-            "amount": amount, "flow": flow, "program": prog}
+        # 거래소별 당일 누적. 슬롯 간 차분으로 세션별(프리/정규/애프터) 순매수를 만든다.
+        if m.get("by_exchange"):
+            by_ex[m["label"]] = m["by_exchange"]
+    rec = {"ts": now.isoformat(timespec="seconds"),
+           "date": now.strftime("%Y%m%d"), "slot": slot,
+           "amount": amount, "flow": flow, "program": prog}
+    if by_ex:
+        rec["by_ex"] = by_ex
+    return rec
 
 
 def append(rec: dict) -> None:
