@@ -29,15 +29,16 @@ def _ensure_dir():
 def build_record(slot: str, fl: dict, now: datetime | None = None) -> dict:
     """flows.summary() 결과 → 저장 레코드."""
     now = now or datetime.now(KST)
-    amount, flow = {}, {}
+    amount, flow, prog = {}, {}, {}
     for m in (fl or {}).get("rows", []):
         if m.get("error"):
             continue
         amount[m["label"]] = m.get("amount_won")
         flow[m["label"]] = m.get("flow_eok") or {}
+        prog[m["label"]] = m.get("program_eok") or {}
     return {"ts": now.isoformat(timespec="seconds"),
             "date": now.strftime("%Y%m%d"), "slot": slot,
-            "amount": amount, "flow": flow}
+            "amount": amount, "flow": flow, "program": prog}
 
 
 def append(rec: dict) -> None:
@@ -82,6 +83,17 @@ def _flow_of(rec, markets, key) -> float | None:
     return sum(vals) if vals else None
 
 
+def _prog_of(rec, markets, key="비차익") -> float | None:
+    p = rec.get("program") or {}
+    vals = [(p.get(m) or {}).get(key) for m in markets]
+    vals = [v for v in vals if v is not None]
+    return sum(vals) if vals else None
+
+
+def _amount_of(rec, market) -> float | None:
+    return (rec.get("amount") or {}).get(market)
+
+
 def _stats(values):
     vals = [v for v in values if v is not None]
     if not vals:
@@ -115,7 +127,25 @@ def compare(slot: str, fl: dict, days: int = 20, today: str | None = None) -> di
         out["amount"] = {"today": a_now, "avg": a_st["avg"], "n": a_st["n"],
                          "pct": (a_now / a_st["avg"] - 1) * 100 if a_st["avg"] else None}
 
+    # 시장별 거래대금
+    per = {}
+    for mk in ("선물", "코스피", "코스닥"):
+        now_v = _amount_of(cur, mk)
+        st = _stats([_amount_of(r, mk) for r in hist])
+        if now_v and st and st["avg"]:
+            per[mk] = {"today": now_v, "avg": st["avg"], "n": st["n"],
+                       "pct": (now_v / st["avg"] - 1) * 100}
+    if per:
+        out["amount_market"] = per
+
     SPOT = ["코스피", "선물"]
+    # 비차익 프로그램도 같은 방식으로 이례성 판정
+    np_now = _prog_of(cur, SPOT)
+    np_st = _stats([_prog_of(r, SPOT) for r in hist])
+    if np_now is not None and np_st:
+        z = (np_now - np_st["avg"]) / np_st["sd"] if np_st["sd"] else 0.0
+        out["nonarb"] = {"today": np_now, "avg": np_st["avg"], "sd": np_st["sd"],
+                         "z": z, "n": np_st["n"]}
     for key, name in (("외국인", "foreign"), ("기관", "inst"), ("개인", "indiv")):
         now_v = _flow_of(cur, SPOT, key)
         st = _stats([_flow_of(r, SPOT, key) for r in hist])

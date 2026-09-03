@@ -164,19 +164,33 @@ def history(days: int = 20, exclude_partial: bool = True, include_futures: bool 
 
 
 def summary(days: int = 20):
-    """현재 거래대금 + 과거 평균 대비 온도. 선물 포함 기준으로 비교한다."""
+    """현재 거래대금 + 과거 평균 대비 온도.
+
+    ref        : 전체 합계 기준 (선물 포함)
+    ref_market : 시장별({선물,코스피,코스닥}) 기준 — 종가 완결일 평균이라
+                 장중 슬롯에서는 store 의 '같은 시각' 비교가 있으면 그쪽이 우선이다.
+    """
     cur = fetch_all()
     h = history(days, include_futures=True)
-    ref = None
+    ref, ref_market = None, {}
     if h is not None and len(h):
         avg = float(h["합계"].mean())
         today = sum(m["amount_won"] for m in cur["rows"]
                     if not m.get("error") and m["amount_won"]) / JO
         ref = {"avg_jo": avg, "today_jo": today,
                "vs_avg_pct": (today / avg - 1) * 100 if avg else None,
-               "days": len(h),
-               "with_futures": "선물" in h.columns}
+               "days": len(h), "with_futures": "선물" in h.columns}
+        for m in cur["rows"]:
+            lab = m.get("label")
+            if m.get("error") or lab not in h.columns or not m.get("amount_won"):
+                continue
+            a = float(h[lab].mean())
+            if a:
+                ref_market[lab] = {"avg_jo": a, "today_jo": m["amount_won"] / JO,
+                                   "pct": (m["amount_won"] / JO / a - 1) * 100,
+                                   "days": len(h)}
     cur["ref"] = ref
+    cur["ref_market"] = ref_market
     return cur
 
 

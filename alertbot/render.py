@@ -196,53 +196,74 @@ def _heat(p):
            ("💤 한산" if p < -20 else "▫️ 보통"))
 
 
-def section_flows(fl, cmp=None):
-    """거래대금(조 단위 정수) + 순매수(코스피+선물 / 코스닥).
+# 표시 순서 — 선물이 규모가 가장 크고 방향을 먼저 보여주므로 앞에 둔다
+MARKET_ORDER = ("선물", "코스피", "코스닥")
 
-    cmp: store.compare() 결과. 같은 슬롯(같은 시각)의 과거 평균과 비교한다.
+
+def section_flows(fl, cmp=None):
+    """거래대금(시장별 20일 대비 증감 포함) + 순매수(비차익 포함).
+
+    cmp: store.compare() 결과. 같은 슬롯(같은 시각) 과거와 비교한다.
          장중 값은 '그 시각까지의 누적'이라 완결된 하루 평균과 비교하면
-         늘 작게 나온다. 같은 시각끼리 비교해야 의미가 있다.
-         표본이 쌓이기 전에는 None 이라 기존 종가평균 비교로 폴백한다.
-    '기타법인*'은 -(개인+외국인+기관) 으로 유도한 값. 순매수 총합은 항등적으로
-    0이므로 이 값 = 기타법인 + 기타외국인이고, 키움 ka10061 실측 대조 결과
-    기타법인 단독과의 오차는 0.4%였다.
+         늘 작게 나온다. 표본이 쌓이기 전에는 종가평균 비교로 폴백한다.
+    '기타법인*'은 -(개인+외국인+기관) 으로 유도. 순매수 총합은 항등적으로 0이라
+    이 값 = 기타법인 + 기타외국인이고, 키움 실측 대조 오차는 0.4%였다.
+    '비차익'은 주체가 아니라 거래 방식(바스켓) 축이라 위 4개와 중복 집계된다.
     """
     if not fl or not fl.get("rows"):
         return ""
     rows = {m.get("label"): m for m in fl["rows"] if not m.get("error")}
+    cmp = cmp or {}
+    per_slot = cmp.get("amount_market") or {}
+    per_day = fl.get("ref_market") or {}
 
     lines = ["\n💰 <b>시장 거래대금</b>"]
+    for lab in MARKET_ORDER:
+        m = rows.get(lab)
+        if not m:
+            continue
+        amt = (m.get("amount_won") or 0) / 1e12
+        # 같은 시각 비교가 있으면 우선, 없으면 종가평균 비교
+        d = per_slot.get(lab) or per_day.get(lab)
+        tag = ""
+        if d and d.get("pct") is not None:
+            arrow = "🔺" if d["pct"] > 0 else ("🔻" if d["pct"] < 0 else "▪️")
+            tag = f" <i>({arrow}{abs(d['pct']):.0f}%)</i>"
+        lines.append(f"  · <b>{esc(lab)}</b> {amt:,.0f}조{tag}")
     for m in fl["rows"]:
         if m.get("error"):
             lines.append(f"  · {esc(m['label'])} — 조회 실패")
-            continue
-        lines.append(f"  · <b>{esc(m['label'])}</b> "
-                     f"{(m.get('amount_won') or 0)/1e12:,.0f}조")
     lines.append(f"  ── <b>합계 {(fl.get('total_amount_jo') or 0):,.0f}조</b>")
 
-    ca = (cmp or {}).get("amount")
+    ca = cmp.get("amount")
     if ca and ca.get("pct") is not None:
-        lines.append(f"  <i>같은 시각 {ca['n']}일평균 {ca['avg']/1e12:,.0f}조 대비 "
-                     f"{ca['pct']:+.0f}% {_heat(ca['pct'])}</i>")
+        lines.append(f"  <i>같은 시각 {ca['n']}일평균 대비 {ca['pct']:+.0f}% "
+                     f"{_heat(ca['pct'])}</i>")
     else:
         ref = fl.get("ref")
         if ref and ref.get("vs_avg_pct") is not None:
             p = ref["vs_avg_pct"]
-            scope = "선물포함" if ref.get("with_futures") else "현물만"
-            lines.append(f"  <i>{ref['days']}일 종가평균 {ref['avg_jo']:,.0f}조({scope}) 대비 "
-                         f"{p:+.0f}% {_heat(p)}</i>")
+            lines.append(f"  <i>{ref['days']}일 종가평균 대비 {p:+.0f}% {_heat(p)}</i>")
 
     KEYS = ("개인", "외국인", "기관", "기타*")
     LABEL = {"개인": "개인", "외국인": "외국인", "기관": "기관", "기타*": "기타법인*"}
 
     def merged(names):
         acc, seen = {k: 0.0 for k in KEYS}, False
+        nonarb, has_p = 0.0, False
         for n in names:
-            f = (rows.get(n) or {}).get("flow_eok") or {}
+            src = rows.get(n) or {}
+            f = src.get("flow_eok") or {}
             for k in KEYS:
                 if f.get(k) is not None:
                     acc[k] += f[k]; seen = True
-        return acc if seen else None
+            p = (src.get("program_eok") or {}).get("비차익")
+            if p is not None:
+                nonarb += p; has_p = True
+        if not seen:
+            return None
+        acc["비차익"] = nonarb if has_p else None
+        return acc
 
     groups = [("코스피+선물", merged(["코스피", "선물"])),
               ("코스닥", merged(["코스닥"]))]
@@ -252,12 +273,15 @@ def section_flows(fl, cmp=None):
             if not acc:
                 continue
             parts = [f"{esc(LABEL[k])} {_flow_fmt(acc[k])}" for k in KEYS]
+            if acc.get("비차익") is not None:
+                parts.append(f"비차익 {_flow_fmt(acc['비차익'])}")
             lines.append(f"  · <b>{esc(title)}</b>")
             lines.append("      " + " · ".join(parts))
 
         note = []
-        for key, name in (("foreign", "외국인"), ("inst", "기관"), ("indiv", "개인")):
-            c = (cmp or {}).get(key)
+        for key, name in (("foreign", "외국인"), ("inst", "기관"),
+                          ("indiv", "개인"), ("nonarb", "비차익")):
+            c = cmp.get(key)
             if not c:
                 continue
             z = c.get("z") or 0
@@ -268,7 +292,8 @@ def section_flows(fl, cmp=None):
                         f"{z:+.1f}σ {verb})</i>")
         if note:
             lines.append("  ⚡ " + " / ".join(note))
-        lines.append("  <i>* 기타법인은 나머지 합으로 유도 (키움 실측 대조 오차 0.4%)</i>")
+        lines.append("  <i>* 기타법인은 나머지 합으로 유도 (오차 0.4%) · "
+                     "비차익은 거래방식 축이라 위 4개와 중복 집계</i>")
     return "\n".join(lines)
 
 
