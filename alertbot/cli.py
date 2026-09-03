@@ -110,7 +110,8 @@ def main(argv=None):
                 # 같은 시각 과거와 비교 → 저장은 비교 뒤에(오늘 값이 표본에 섞이지 않게)
                 fl_cmp = store.compare(slot, fl)
                 if fl_cmp:
-                    print(f"  같은 시각 비교 표본 {fl_cmp['n']}일")
+                    print(f"  같은 시각 비교 표본 {fl_cmp.get('n_short', 0)}"
+                          f"/{fl_cmp.get('n_long', 0)}일")
                 else:
                     print("  같은 시각 비교 표본 없음 — 종가평균으로 폴백")
                 if not args.no_store:

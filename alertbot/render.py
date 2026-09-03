@@ -59,7 +59,7 @@ def section_quotes(win):
             lines.append(f"  {esc(r['name'])} — 데이터 없음")
             continue
         star = " ★" if r["significant"] else ""
-        sign = "🔺" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
+        sign = "🔺" if r["chg_pct"] > 0 else ("🔻" if r["chg_pct"] < 0 else "▪️")
         lines.append(f"  {sign} <b>{esc(r['name'])}</b> "
                      f"{_fmt_px(r['end_px'], r['decimals'])}"
                      f"  <b>{r['chg_pct']:+.2f}%</b>{star}")
@@ -84,7 +84,7 @@ def section_quote_news(win, news):
 
 
 def section_us_sectors(sectors, leaders=None):
-    """전일 미국 섹터 — 시황과 같은 🔺🔽 마커. 강세 섹터에만 주도주를 붙인다."""
+    """전일 미국 섹터 — 시황과 같은 🔺🔻 마커. 강세 섹터에만 주도주를 붙인다."""
     if not sectors:
         return ""
     up = [s for s in sectors if s["change_pct"] > 0][:3]
@@ -101,7 +101,7 @@ def section_us_sectors(sectors, leaders=None):
             lines.append("      " + " · ".join(
                 f"{esc(x['ticker'])} {x['change_pct']:+.1f}%" for x in ld))
     for s in reversed(dn):
-        lines.append(f"  🔽 <b>{esc(s['sector'])}</b> {s['change_pct']:+.2f}%")
+        lines.append(f"  🔻 <b>{esc(s['sector'])}</b> {s['change_pct']:+.2f}%")
     return "\n".join(lines)
 
 
@@ -114,7 +114,7 @@ def section_kr_sectors(upjong, themes, when="장중"):
             return
         lines.append(f"\n{title}")
         for x in list(up) + list(down):
-            mark = "🔺" if x["change_pct"] > 0 else "🔽"
+            mark = "🔺" if x["change_pct"] > 0 else "🔻"
             d3 = (f" <i>(3일 {x['d3_pct']:+.2f}%)</i>"
                   if x.get("d3_pct") is not None else "")
             lines.append(f"  {mark} <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%{d3}")
@@ -231,7 +231,7 @@ def _flow_table(groups):
         return "　" * left + s + "　" * (gap - left)
 
     titles = [lab("구분")] + [g[0] for g in groups]
-    rows = [[lab(k)] + [("-" if (acc or {}).get(k) is None else f"{acc[k]/1e4:+.1f}조")
+    rows = [[lab(k)] + [("-" if (acc or {}).get(k) is None else f"{acc[k]/1e4:+.1f}")
                         for _, acc in groups] for k in KEYS]
     w = [max(_dw(r[i]) for r in [titles] + rows) + 2 for i in range(len(titles))]
     out = ["".join(_pad(t, w[i], "c") for i, t in enumerate(titles)),
@@ -248,10 +248,11 @@ def _heat(p):
 # 거래대금 표시 순서 — 선물이 규모가 가장 크고 방향을 먼저 보여주므로 앞에 둔다
 MARKET_ORDER = ("선물", "코스피", "코스닥")
 
-# 순매수 표 열. 코스피·코스닥은 키움(KRX+NXT 통합), 선물은 네이버 —
-# 키움 국내주식 REST 에는 시장 단위 선물 투자자별 TR 이 없다(ka10051 은 현물만,
-# ka10063 은 종목별). 그래서 선물만 소스가 다르고 KRX 거래분만 담긴다.
-FLOW_MARKETS = ("코스피", "선물", "코스닥")
+# 순매수 표 열. 코스피 현물과 코스피200 선물을 합쳐 한 열로 본다 —
+# 외국인이 현물을 팔면서 선물을 사는 식의 헤지가 흔해 둘을 나눠 보면 방향을 놓친다.
+# 코스피·코스닥은 키움(KRX+NXT 통합), 선물은 네이버(KRX) — 키움 국내주식 REST 에
+# 시장 단위 선물 투자자별 TR 이 없다(ka10051 은 현물만, ka10063 은 종목별).
+FLOW_GROUPS = (("코스피+선물", ("코스피", "선물")), ("코스닥", ("코스닥",)))
 
 
 def section_flows(fl, cmp=None):
@@ -279,7 +280,7 @@ def section_flows(fl, cmp=None):
         p = d.get("pct_short")
         tag = ""
         if p is not None:
-            tag = f" <i>({'🔺' if p > 0 else '🔽'}{abs(p):.0f}%)</i>"
+            tag = f" <i>({'🔺' if p > 0 else '🔻'}{abs(p):.0f}%)</i>"
         lines.append(f"  · <b>{esc(lab)}</b> {amt:,.0f}조{tag}")
     for m in fl["rows"]:
         if m.get("error"):
@@ -295,16 +296,24 @@ def section_flows(fl, cmp=None):
 
     KEYS = ("개인", "외국인", "기관", "기타법인")
 
-    def one(name):
-        m = rows.get(name) or {}
-        f = m.get("flow_eok") or {}
-        acc = {k: f[k] for k in KEYS if f.get(k) is not None}
-        if not acc:
+    def merged(names):
+        acc, seen = {k: 0.0 for k in KEYS}, False
+        nonarb, has_p = 0.0, False
+        for n in names:
+            m = rows.get(n) or {}
+            f = m.get("flow_eok") or {}
+            for k in KEYS:
+                if f.get(k) is not None:
+                    acc[k] += f[k]; seen = True
+            p = (m.get("program_eok") or {}).get("비차익")
+            if p is not None:
+                nonarb += p; has_p = True
+        if not seen:
             return None
-        acc["비차익"] = (m.get("program_eok") or {}).get("비차익")
+        acc["비차익"] = nonarb if has_p else None
         return acc
 
-    groups = [(m, one(m)) for m in FLOW_MARKETS if m in rows]
+    groups = [(title, merged(names)) for title, names in FLOW_GROUPS]
     if any(g[1] for g in groups):
         fsrc = "키움 KRX+NXT" if fl.get("flow_src") == "kiwoom" else "네이버 KRX"
         lines.append(f"\n💵 <b>순매수</b> <i>(조원 · {esc(fsrc)})</i>")
@@ -321,10 +330,8 @@ def section_flows(fl, cmp=None):
             note.append(f"{esc(name)} <i>({c['z']:+.1f}σ {verb})</i>")
         if note:
             lines.append("  ⚡ " + " / ".join(note) +
-                         f" <i>· 코스피 {cmp.get('n_long', 0)}일 기준</i>")
+                         f" <i>· 코스피+선물 {cmp.get('n_long', 0)}일 기준</i>")
         lines.append("  · <i>개인+외국인+기관+기타법인 = 0</i>")
-        lines.append("  · <i>비차익은 거래방식 축이라 위 4개와 중복 집계</i>")
-        lines.append("  · <i>선물만 네이버(KRX 거래분)</i>")
     return "\n".join(lines)
 
 

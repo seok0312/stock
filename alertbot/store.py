@@ -162,8 +162,9 @@ def compare(slot: str, fl: dict, short: int = 5, long: int = 20,
     if per:
         out["amount_market"] = per
 
-    # 코스피 현물 기준. 순매수 소스가 키움(KRX+NXT 통합)이라 선물은 들어 있지 않다.
-    SPOT = ["코스피"]
+    # 브리핑 표와 같은 조합(코스피 현물 + 코스피200 선물)으로 비교해야
+    # 표의 숫자와 z-score 가 같은 대상을 가리킨다.
+    SPOT = ["코스피", "선물"]
     items = [("외국인", "foreign", lambda r: _flow_of(r, SPOT, "외국인")),
              ("기관", "inst", lambda r: _flow_of(r, SPOT, "기관")),
              ("개인", "indiv", lambda r: _flow_of(r, SPOT, "개인")),
