@@ -2,6 +2,8 @@
 """텔레그램 메시지 조립. 각 섹션은 데이터가 없으면 통째로 생략된다."""
 from __future__ import annotations
 
+import unicodedata
+
 from notify import esc
 
 WD = ["월", "화", "수", "목", "금", "토", "일"]
@@ -34,7 +36,7 @@ def section_quotes(win):
         if r["chg_pct"] is None:
             lines.append(f"  {esc(r['name'])} — 데이터 없음"); continue
         star = " ★" if r["significant"] else ""
-        sign = "🔺" if r["chg_pct"] > 0 else ("🔻" if r["chg_pct"] < 0 else "▪️")
+        sign = "🔺" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
         lines.append(f"  {sign} <b>{esc(r['name'])}</b> {_fmt_px(r['end_px'], r['decimals'])}"
                      f"  <b>{r['chg_pct']:+.2f}%</b>{star}")
     return "\n".join(lines)
@@ -60,7 +62,7 @@ def section_news(news_by_asset):
 
 
 def section_us_sectors(sectors, leaders=None, topic_news=None):
-    """전일 미국 섹터 — 시황과 같은 🔺🔻 마커.
+    """전일 미국 섹터 — 시황과 같은 🔺🔽 마커.
 
     leaders:    {섹터명: [{ticker, change_pct}]}  finviz 종목 등락률 기반 주도주
     topic_news: {섹터명: [{title, url, source}]}  왜 올랐는지 원인 기사
@@ -68,7 +70,7 @@ def section_us_sectors(sectors, leaders=None, topic_news=None):
     """
     if not sectors:
         return ""
-    up = [s for s in sectors if s["change_pct"] > 0][:4]
+    up = [s for s in sectors if s["change_pct"] > 0][:3]
     dn = [s for s in sectors if s["change_pct"] < 0][-3:]
     if not up and not dn:
         return ""
@@ -86,37 +88,45 @@ def section_us_sectors(sectors, leaders=None, topic_news=None):
             t = esc(it.get("title", ""))[:90]
             lines.append(f"      <a href=\"{it.get('url','')}\">{t}</a>")
     for s in reversed(dn):
-        lines.append(f"  🔻 <b>{esc(s['sector'])}</b> {s['change_pct']:+.2f}%")
+        lines.append(f"  🔽 <b>{esc(s['sector'])}</b> {s['change_pct']:+.2f}%")
     return "\n".join(lines)
 
 
 def section_kr_sectors(upjong, themes, when="장중", topic_news=None):
-    """장중 한국 업종 강약 + 주도 테마(+주도주, 원인 뉴스).
+    """장중 한국 업종 강약 + 주도 테마(주도주·원인뉴스 포함).
 
-    09:30 이후 슬롯용. 미국장이 닫혀 있어 장중 한국 데이터로 판단해야 한다.
-    topic_news: {업종명/테마명: [{title,url,source}]}
+    업종·테마 모두 상승 3 / 하락 3 만 보여준다. 그 이상은 노이즈에 가깝다.
+    themes 는 {'up': [...], 'down': [...]} 구조.
     """
     lines = []
     topic_news = topic_news or {}
-    if upjong and (upjong.get("up") or upjong.get("down")):
-        lines.append(f"\n🇰🇷 <b>한국 업종</b> <i>({esc(when)})</i>")
-        for x in upjong.get("up", []):
-            lines.append(f"  🔺 <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%")
+
+    def block(title, up, down, with_leaders=False):
+        if not up and not down:
+            return
+        lines.append(f"\n{title}")
+        for x in up:
+            d3 = (f" <i>(3일 {x['d3_pct']:+.2f}%)</i>"
+                  if x.get("d3_pct") is not None else "")
+            lines.append(f"  🔺 <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%{d3}")
+            if with_leaders and x.get("leaders"):
+                lines.append(f"      {esc(', '.join(x['leaders']))}")
             for it in (topic_news.get(x["name"]) or [])[:1]:
                 lines.append(f"      <a href=\"{it.get('url','')}\">"
                              f"{esc(it.get('title',''))[:90]}</a>")
-        for x in upjong.get("down", []):
-            lines.append(f"  🔻 <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%")
+        for x in down:
+            d3 = (f" <i>(3일 {x['d3_pct']:+.2f}%)</i>"
+                  if x.get("d3_pct") is not None else "")
+            lines.append(f"  🔽 <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%{d3}")
+            if with_leaders and x.get("leaders"):
+                lines.append(f"      {esc(', '.join(x['leaders']))}")
+
+    if upjong:
+        block(f"🇰🇷 <b>한국 업종</b> <i>({esc(when)})</i>",
+              upjong.get("up") or [], upjong.get("down") or [])
     if themes:
-        lines.append("\n🎯 <b>주도 테마</b>")
-        for t in themes:
-            d3 = f" <i>(3일 {t['d3_pct']:+.2f}%)</i>" if t.get("d3_pct") is not None else ""
-            lines.append(f"  · <b>{esc(t['name'])}</b> {t['change_pct']:+.2f}%{d3}")
-            if t.get("leaders"):
-                lines.append(f"      {esc(', '.join(t['leaders']))}")
-            for it in (topic_news.get(t["name"]) or [])[:1]:
-                lines.append(f"      <a href=\"{it.get('url','')}\">"
-                             f"{esc(it.get('title',''))[:90]}</a>")
+        block("🎯 <b>주도 테마</b>", themes.get("up") or [],
+              themes.get("down") or [], with_leaders=True)
     return "\n".join(lines)
 
 
@@ -126,7 +136,7 @@ def section_kr_impact(impacts):
         return ""
     lines = ["\n🇰🇷 <b>한국시장 영향 예상</b>"]
     for im in impacts[:5]:
-        lines.append(f"  · {esc(im['driver'])} <b>→ {esc(im['kr_sector'])}</b>")
+        lines.append(f"  · <b>{esc(im['driver'])} → {esc(im['kr_sector'])}</b>")
         if im.get("tickers"):
             names = ", ".join(f"{esc(t['name'])}({t['code']})" for t in im["tickers"][:5])
             lines.append(f"      {names}")
@@ -185,6 +195,51 @@ def section_leaders(ld, title="🎯 <b>당일 주도주 후보</b>"):
     return "\n".join(lines)
 
 
+def _dw(s: str) -> int:
+    """표시 폭. 한글·CJK는 2칸으로 센다(<pre> 고정폭 정렬용)."""
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in s)
+
+
+def _pad(s: str, width: int, right: bool = False) -> str:
+    gap = max(0, width - _dw(s))
+    return (" " * gap + s) if right else (s + " " * gap)
+
+
+def _flow_table(groups, cmp_map):
+    """순매수를 표로. Telegram <pre> 고정폭 사용.
+
+    셀: '+0.2조 ▲0.3' = 오늘 +0.2조, 같은 시각 평균보다 0.3조 많음.
+    비교값은 store 표본이 있을 때만 붙는다. 코스피+선물 열에만 적용
+    (store 비교가 그 조합 기준으로 계산되므로).
+    """
+    KEYS = [("개인", "개인", "indiv"), ("외국인", "외국인", "foreign"),
+            ("기관", "기관", "inst"), ("기타*", "기타법인", None),
+            ("비차익", "비차익", "nonarb")]
+    titles = [g[0] for g in groups]
+    label_w = max(_dw(lab) for _, lab, _ in KEYS) + 1
+
+    def cell(val, key, first):
+        if val is None:
+            return "-"
+        txt = f"{val/1e4:+.1f}조"
+        c = cmp_map.get(key) if (key and first) else None
+        if c and c.get("avg") is not None:
+            d = (val - c["avg"]) / 1e4
+            txt += f" {'▲' if d >= 0 else '▼'}{abs(d):.1f}"
+        return txt
+
+    body = [(lab, [cell((acc or {}).get(k), ck, i == 0)
+                   for i, (_, acc) in enumerate(groups)])
+            for k, lab, ck in KEYS]
+    col_w = [max([_dw(t)] + [_dw(r[1][i]) for r in body]) + 2
+             for i, t in enumerate(titles)]
+    out = [_pad("", label_w) + "".join(_pad(t, w, True) for t, w in zip(titles, col_w))]
+    for lab, cells in body:
+        out.append(_pad(lab, label_w) + "".join(_pad(c, w, True)
+                                                for c, w in zip(cells, col_w)))
+    return "<pre>" + esc("\n".join(out)) + "</pre>"
+
+
 def _flow_fmt(v):
     """순매수 표기는 조 단위 소수 1자리로 통일.
     1,000억 = 0.1조. 그 미만은 반올림돼 0.1 또는 0.0 으로 표시된다."""
@@ -227,7 +282,7 @@ def section_flows(fl, cmp=None):
         d = per_slot.get(lab) or per_day.get(lab)
         tag = ""
         if d and d.get("pct") is not None:
-            arrow = "🔺" if d["pct"] > 0 else ("🔻" if d["pct"] < 0 else "▪️")
+            arrow = "🔺" if d["pct"] > 0 else ("🔽" if d["pct"] < 0 else "▪️")
             tag = f" <i>({arrow}{abs(d['pct']):.0f}%)</i>"
         lines.append(f"  · <b>{esc(lab)}</b> {amt:,.0f}조{tag}")
     for m in fl["rows"]:
@@ -268,15 +323,8 @@ def section_flows(fl, cmp=None):
     groups = [("코스피+선물", merged(["코스피", "선물"])),
               ("코스닥", merged(["코스닥"]))]
     if any(g[1] for g in groups):
-        lines.append("\n💵 <b>순매수</b>")
-        for title, acc in groups:
-            if not acc:
-                continue
-            parts = [f"{esc(LABEL[k])} {_flow_fmt(acc[k])}" for k in KEYS]
-            if acc.get("비차익") is not None:
-                parts.append(f"비차익 {_flow_fmt(acc['비차익'])}")
-            lines.append(f"  · <b>{esc(title)}</b>")
-            lines.append("      " + " · ".join(parts))
+        lines.append("\n💵 <b>순매수</b> <i>(조원, ▲▼는 같은 시각 평균 대비)</i>")
+        lines.append(_flow_table(groups, cmp))
 
         note = []
         for key, name in (("foreign", "외국인"), ("inst", "기관"),

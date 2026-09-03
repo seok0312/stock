@@ -60,7 +60,7 @@ def _flat(cols):
     return out
 
 
-def fetch_upjong(top: int = 5):
+def fetch_upjong(top: int = 3):
     """업종 등락률. {'up': [...], 'down': [...]} 각 [{name, change_pct, rise, fall}]"""
     for t in _read(UPJONG):
         cols = _flat(t.columns)
@@ -86,8 +86,9 @@ def fetch_upjong(top: int = 5):
     return None
 
 
-def fetch_themes(top: int = 5):
-    """테마 등락률 + 주도주. [{name, change_pct, d3_pct, leaders:[..]}]"""
+def fetch_themes(top: int = 3):
+    """테마 등락률 + 주도주. {'up': [...], 'down': [...]}
+    각 [{name, change_pct, d3_pct, leaders:[..]}]"""
     for t in _read(THEME):
         cols = _flat(t.columns)
         if "테마명" not in cols:
@@ -110,7 +111,9 @@ def fetch_themes(top: int = 5):
         if not rows:
             continue
         rows.sort(key=lambda x: x["change_pct"], reverse=True)
-        return rows[:top]
+        up = [x for x in rows if x["change_pct"] > 0][:top]
+        down = [x for x in rows if x["change_pct"] < 0][-top:][::-1]
+        return {"up": up, "down": down, "n": len(rows)}
     return None
 
 
@@ -127,7 +130,7 @@ if __name__ == "__main__":
     print()
     th = fetch_themes()
     if th:
-        print("■ 주도 테마")
-        for x in th:
+        print(f"■ 주도 테마 (전체 {th['n']}개)")
+        for x in th["up"] + th["down"]:
             d3 = f" (3일 {x['d3_pct']:+.2f}%)" if x["d3_pct"] is not None else ""
             print(f"   · {x['name']:<14}{x['change_pct']:+6.2f}%{d3}  → {', '.join(x['leaders'])}")
