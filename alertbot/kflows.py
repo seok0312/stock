@@ -34,7 +34,10 @@ for _p in (os.path.abspath(os.path.join(_HERE, "..")), _HERE):
     if os.path.isdir(os.path.join(_p, "closebet")) and _p not in sys.path:
         sys.path.insert(0, _p)
 
-STEX = "3"                       # 1=KRX, 2=NXT, 3=통합
+# 거래소를 나눠 받는다. KRX(정규장)와 NXT(넥스트레이드)는 흐름이 반대인 날이 있어
+# (2026-09-03 코스피 외국인: KRX -4,232억 / NXT +2,411억) 어디서 체결할지 판단에 쓰인다.
+# KRX + NXT = 통합 이 원 단위로 성립함을 확인했으므로 통합은 합으로 유도한다.
+EXCHANGES = (("KRX", "1"), ("NXT", "2"))
 MARKETS = (("코스피", "0", "P00101"), ("코스닥", "1", "P10101"))
 
 
@@ -59,11 +62,11 @@ def _client():
     return KiwoomClient()
 
 
-def _flow(kc, mrkt_tp: str, base_dt: str) -> dict | None:
+def _flow(kc, mrkt_tp: str, base_dt: str, stex: str = "3") -> dict | None:
     """ka10051 첫 행(= 시장 전체) → {개인, 외국인, 기관, 기타법인} 억원."""
     data, _ = kc.request("ka10051",
                          {"mrkt_tp": mrkt_tp, "amt_qty_tp": "0",
-                          "base_dt": base_dt, "stex_tp": STEX},
+                          "base_dt": base_dt, "stex_tp": stex},
                          endpoint="/api/dostk/sect")
     rows = data.get("inds_netprps") or []
     if not rows:
@@ -80,11 +83,11 @@ def _flow(kc, mrkt_tp: str, base_dt: str) -> dict | None:
     return {"개인": ind, "외국인": frgn, "기관": orgn, "기타법인": etc}
 
 
-def _program(kc, mrkt_tp: str, base_dt: str) -> dict | None:
+def _program(kc, mrkt_tp: str, base_dt: str, stex: str = "3") -> dict | None:
     """ka90010 → {차익, 비차익, 합계} 억원. 백만원 단위라 100으로 나눈다."""
     data, _ = kc.request("ka90010",
                          {"date": base_dt, "amt_qty_tp": "1", "mrkt_tp": mrkt_tp,
-                          "min_tic_tp": "0", "stex_tp": STEX},
+                          "min_tic_tp": "0", "stex_tp": stex},
                          endpoint="/api/dostk/mrkcond")
     rows = data.get("prm_trde_trnsn") or []
     row = next((r for r in rows if str(r.get("cntr_tm", ""))[:8] == base_dt), None)
@@ -110,18 +113,37 @@ def fetch(base_dt: str | None = None) -> dict | None:
         return None
     out = {}
     for label, mrkt_tp, prog_cd in MARKETS:
-        d = {}
-        try:
-            d["flow"] = _flow(kc, mrkt_tp, base_dt)
-        except Exception:
-            d["flow"] = None
-        try:
-            d["program"] = _program(kc, prog_cd, base_dt)
-        except Exception:
-            d["program"] = None
-        if d.get("flow") or d.get("program"):
+        by_ex = {}
+        for ex_name, stex in EXCHANGES:
+            e = {}
+            try:
+                e["flow"] = _flow(kc, mrkt_tp, base_dt, stex)
+            except Exception:
+                e["flow"] = None
+            try:
+                e["program"] = _program(kc, prog_cd, base_dt, stex)
+            except Exception:
+                e["program"] = None
+            by_ex[ex_name] = e
+        d = {"by_exchange": by_ex,
+             "flow": _sum_of(by_ex, "flow"), "program": _sum_of(by_ex, "program")}
+        if d["flow"] or d["program"]:
             out[label] = d
     return out or None
+
+
+def _sum_of(by_ex: dict, key: str) -> dict | None:
+    """거래소별 값을 합쳐 통합값을 만든다. 하나라도 실패하면 None(부분합은 오해를 부른다)."""
+    parts = [(e.get(key) or None) for e in by_ex.values()]
+    if any(p is None for p in parts) or not parts:
+        return None
+    acc = {}
+    for p in parts:
+        for k, v in p.items():
+            if v is None:
+                continue
+            acc[k] = acc.get(k, 0.0) + v
+    return acc or None
 
 
 if __name__ == "__main__":
@@ -131,6 +153,11 @@ if __name__ == "__main__":
         raise SystemExit("키움 조회 실패")
     for label, d in r.items():
         f, p = d.get("flow") or {}, d.get("program") or {}
+        for ex, e in (d.get("by_exchange") or {}).items():
+            ef = e.get("flow") or {}
+            if ef:
+                print(f"   [{ex:<3}] " + "  ".join(f"{k} {v:+,.0f}" for k, v in ef.items())
+                      + f"   비차익 {(e.get('program') or {}).get('비차익', 0):+,.0f}")
         print(f"■ {label}  (KRX+NXT 통합, 억원)")
         if f:
             print("   " + "  ".join(f"{k} {v:+,.0f}" for k, v in f.items()))

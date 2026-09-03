@@ -254,6 +254,8 @@ def apply_kiwoom(cur: dict) -> str:
             m["flow_eok"] = dict(d["flow"]); used = True
         if d.get("program"):
             m["program_eok"] = dict(d["program"]); used = True
+        if d.get("by_exchange"):
+            m["by_exchange"] = d["by_exchange"]
     if used:
         cur["flow_src"] = "kiwoom"
     return cur["flow_src"]
