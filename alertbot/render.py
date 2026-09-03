@@ -8,7 +8,7 @@ from notify import esc
 
 WD = ["월", "화", "수", "목", "금", "토", "일"]
 ICON = {"0600": "☀️", "0750": "🌅", "0850": "🔔", "0930": "🟢",
-        "1430": "🔔", "1600": "🏁", "1900": "🌙", "2000": "🌛"}
+        "1430": "🔔", "1530": "🏁", "1900": "🌙", "2000": "🌛"}
 
 
 def _fmt_px(v, dp):
@@ -153,8 +153,10 @@ def section_events_done(ev):
         return ""
     lines = ["\n🗓 <b>발표 완료</b> <i>(24시간)</i>"]
     for d in done:
-        v = f" {esc(d['value'])}" if d.get("value") else ""
+        v = f" : {esc(d['verdict'])}" if d.get("verdict") else ""
         lines.append(f"  · {d['when']:%H:%M} <b>{esc(d['label'])}</b>{v}")
+        if d.get("nums"):
+            lines.append(f"      ({esc(d['nums'])})")
         if d.get("react"):
             lines.append(f"      → 발표 후 {esc(d['react'])}")
         elif d.get("assets"):

@@ -81,7 +81,7 @@ def send(text: str, token: str | None = None, chat_id: str | None = None,
                               json={"chat_id": chat_id, "text": p,
                                     "parse_mode": "HTML",
                                     "disable_web_page_preview": True},
-                              timeout=15)
+                              timeout=30)
             j = {}
             try:
                 j = r.json()
@@ -96,6 +96,13 @@ def send(text: str, token: str | None = None, chat_id: str | None = None,
                 print(f"  전송 실패 {i}/{len(parts)} HTTP {r.status_code} "
                       f"chat={chat_id}: {j.get('description') or r.text[:200]}")
                 ok = False
+        except requests.exceptions.ReadTimeout:
+            # 텔레그램은 멱등 키가 없어 재시도하면 중복 발송이 된다.
+            # 읽기 타임아웃은 '응답만 늦은' 경우가 많아 실제로는 전송돼 있다
+            # (2026-09-03 실측: 타임아웃 난 메시지가 msg_id 27 로 존재).
+            # 하루 8회 알림에서 중복은 누락보다 나쁘므로 재시도하지 않는다.
+            print(f"  전송 타임아웃 {i}/{len(parts)} — 전송됐을 수 있어 재시도 안 함")
+            ok = False
         except Exception as e:
             print(f"  전송 예외 {i}/{len(parts)}: {type(e).__name__}: {e}")
             ok = False

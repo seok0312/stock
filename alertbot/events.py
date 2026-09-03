@@ -335,6 +335,24 @@ def label(e) -> str:
     return f"{FLAG.get(e['country'], e['country'])} {nm or ''}"
 
 
+def verdict_text(e) -> str:
+    """'하회(서프라이즈)' 처럼 예상 대비 판정만. 판정할 수 없으면 빈 문자열."""
+    if e.get("dev") is None or e.get("actual") is None:
+        return ""
+    v = "상회" if e["dev"] > 0 else ("하회" if e["dev"] < 0 else "부합")
+    return v + ("(서프라이즈)" if abs(e["dev"]) >= 0.5 else "")
+
+
+def numbers_text(e) -> str:
+    """'실제 38 / 예상 47' — 수치만. 제목 줄이 길어지지 않게 분리해 쓴다."""
+    u = e.get("unit") or ""
+    fmt = lambda v: f"{v:g}{u}" if v is not None else None
+    a, c = fmt(e.get("actual")), fmt(e.get("consensus"))
+    if a is None:
+        return f"예상 {c}" if c else ""
+    return f"실제 {a} / 예상 {c}" if c else f"실제 {a}"
+
+
 def value_text(e) -> str:
     """'54.6 (예상 55.2 · 하회)' — 실제치가 없으면 예상치만."""
     u = e.get("unit") or ""
@@ -433,7 +451,7 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
         # 등락률과 연결하면 인과처럼 보이지만 근거가 없다.
         in_win = win["start"] <= e["when"] <= win["end"]
         done.append({"when": e["when"], "label": label(e), "stars": stars(e),
-                     "value": value_text(e),
+                     "verdict": verdict_text(e), "nums": numbers_text(e),
                      "assets": link_assets(e, quote_rows) if in_win else [],
                      "react": reactions.react_text(e, rows=rrows) if reactions else None,
                      "note": e.get("note")})
