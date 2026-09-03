@@ -74,6 +74,7 @@ def main(argv=None):
     ap.add_argument("--no-sectors", action="store_true")
     ap.add_argument("--no-flows", action="store_true")
     ap.add_argument("--no-leaders", action="store_true")
+    ap.add_argument("--no-events", action="store_true")
     ap.add_argument("--no-store", action="store_true",
                     help="스냅샷을 파일에 기록하지 않음(테스트용)")
     args = ap.parse_args(argv)
@@ -191,10 +192,26 @@ def main(argv=None):
             except Exception as e:
                 print(f"  주도주 뉴스 실패(계속 진행): {type(e).__name__}: {e}")
 
+    ev_ctx = None
+    if not args.no_events:
+        # 일정은 뉴스와 달리 '변동 전에 이미 알던 사실'이라 근거로서 더 강하다.
+        # 창 시작 전부터 다음날까지 훑어 (발표된 것, 앞으로 올 것)으로 나눈다.
+        try:
+            import events as ev_mod
+            names = [x["name"] for x in (kr_upjong or {}).get("up", [])] +                     [x["name"] for x in (kr_themes or {}).get("up", [])]
+            evs = ev_mod.collect(win["start"] - timedelta(hours=2),
+                                 now + timedelta(hours=36))
+            ev_ctx = ev_mod.brief(evs, win, quote_rows=win["rows"],
+                                  sector_names=names, now=now)
+            print(f"  일정 {len(evs)}건 · 구간내 {ev_ctx['n_done']} · "
+                  f"예정 {len(ev_ctx['ahead'])}")
+        except Exception as e:
+            print(f"  일정 수집 실패(계속 진행): {type(e).__name__}: {e}")
+
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
                        leaders=ld, us_leaders=us_leaders, topic_news=topic_news,
-                       leader_news=leader_news,
+                       leader_news=leader_news, events=ev_ctx,
                        flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)

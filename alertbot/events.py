@@ -1,0 +1,409 @@
+# -*- coding: utf-8 -*-
+"""경제 일정 수집 + 변동과의 연결 — '왜 움직였나'의 근거를 뉴스 대신 일정에서 찾는다.
+
+왜 필요한가:
+  뉴스는 사후 서술이라 근거가 약하다("~때문으로 풀이된다"). 반면 일정은
+  **변동이 일어나기 전에 이미 알고 있던 사실**이고, 발표시각·예상치·실제치가
+  숫자로 남아 인과를 검증할 수 있다. 종가베팅은 시가매도라 오버나이트
+  노출이 필수인데, 그 구간에 무엇이 예정돼 있는지가 뉴스보다 중요하다.
+
+소스:
+  FXStreet 캘린더 API — actual/consensus/previous/ratioDeviation 을 모두 준다.
+  investing.com 은 이 환경(로컬·서버 모두)에서 전 경로 403(WAF)이라 쓸 수 없다.
+  ForexFactory 미러(nfs.faireconomy.media)는 열리지만 actual 이 없고 한국도 빠져
+  '서프라이즈' 계산이 불가능해 제외했다.
+
+확장:
+  프로바이더 레지스트리 구조다. 소스를 추가하려면 @provider 로 함수 하나만 붙이면
+  되고, 코드를 안 건드리고 넣으려면 data/events.json 에 항목을 적으면 된다.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from datetime import datetime, timedelta, timezone
+
+import requests
+
+KST = timezone(timedelta(hours=9))
+UTC = timezone.utc
+HERE = os.path.dirname(os.path.abspath(__file__))
+# 사용자가 직접 넣는 일정. 저장소에 같이 다니도록 모듈 옆에 둔다
+# (data/ 는 .gitignore 대상이라 서버로 배포되지 않는다).
+CUSTOM_PATH = os.environ.get("ALERTBOT_EVENTS") or os.path.join(HERE, "events_custom.json")
+
+FXS = "https://calendar-api.fxstreet.com/en/api/v1/eventDates/{a}/{b}"
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+      "Origin": "https://www.fxstreet.com", "Referer": "https://www.fxstreet.com/"}
+
+COUNTRIES = ("US", "KR", "CN", "JP", "EMU")
+VOLS = ("MEDIUM", "HIGH")          # LOW 는 가격을 거의 안 움직여 노이즈다
+FLAG = {"US": "🇺🇸", "KR": "🇰🇷", "CN": "🇨🇳", "JP": "🇯🇵",
+        "EMU": "🇪🇺", "DE": "🇩🇪", "GB": "🇬🇧"}
+
+# ── 이벤트명 → (한글표기, 태그). 위에서부터 첫 매치를 쓴다.
+#    태그가 링크의 유일한 기준이다. 새 지표가 나와도 태그만 맞으면 자동 연결된다.
+NAME_MAP: list[tuple[str, str, tuple]] = [
+    (r"Nonfarm Payroll",                "비농업고용",        ("고용", "통화정책")),
+    (r"ADP Employment",                 "ADP 민간고용",      ("고용", "통화정책")),
+    (r"Unemployment Rate",              "실업률",            ("고용",)),
+    (r"Initial Jobless|Unemployment Claims", "신규 실업수당",  ("고용",)),
+    (r"Continuing Jobless",             "연속 실업수당",      ("고용",)),
+    (r"Challenger Job Cuts",            "감원 발표",          ("고용",)),
+    (r"Average Hourly Earnings",        "시간당 임금",        ("고용", "물가")),
+    (r"JOLTS",                          "구인건수",           ("고용",)),
+    (r"Core.*Personal Consumption|Core PCE", "근원 PCE",      ("물가", "통화정책")),
+    (r"Personal Consumption Expenditure", "PCE 물가",         ("물가", "통화정책")),
+    (r"Consumer Price Index|^CPI",      "소비자물가",         ("물가", "통화정책")),
+    (r"Producer Price Index|^PPI",      "생산자물가",         ("물가",)),
+    (r"Import Price|Export Price",      "수출입물가",         ("물가", "무역")),
+    (r"Interest Rate Decision|Rate Decision", "기준금리 결정", ("금리", "통화정책")),
+    (r"FOMC|Fed's|Federal Reserve|Beige Book|Powell|Jackson Hole",
+                                        "연준",              ("금리", "통화정책")),
+    (r"Treasury.*Auction|Bond Auction", "국채 입찰",          ("금리",)),
+    (r"ISM Manufacturing",              "ISM 제조업",         ("경기", "제조")),
+    (r"ISM Services|ISM Non-Manufacturing", "ISM 서비스업",   ("경기", "서비스")),
+    (r"Manufacturing PMI",              "제조업 PMI",         ("경기", "제조")),
+    (r"Services PMI|Composite PMI",     "서비스 PMI",         ("경기", "서비스")),
+    (r"Industrial Production|Industrial Output", "산업생산",   ("경기", "제조")),
+    (r"Durable Goods|Factory Orders",   "내구재·공장주문",     ("경기", "제조")),
+    (r"Retail Sales",                   "소매판매",           ("소비", "경기")),
+    (r"Consumer Confidence|Consumer Sentiment", "소비자심리",  ("소비",)),
+    (r"Gross Domestic Product|^GDP",    "GDP",               ("경기",)),
+    (r"Trade Balance",                  "무역수지",           ("무역", "경기")),
+    (r"Current Account",                "경상수지",           ("무역",)),
+    (r"Crude Oil Inventories|EIA|API Weekly", "원유 재고",     ("원유",)),
+    (r"OPEC",                           "OPEC",              ("원유",)),
+    (r"Baker Hughes",                   "가동 시추기",         ("원유",)),
+    (r"Housing Starts|Building Permits|Home Sales", "주택지표", ("경기", "금리")),
+    (r"FX Reserves|Foreign Exchange Reserves", "외환보유액",   ("환율",)),
+    (r"Productivity|Unit Labor Cost",   "생산성·노동비용",     ("고용", "물가")),
+    (r"Participation Rate|Underemployment", "고용참가·불완전", ("고용",)),
+    (r"ECB's|BoE's|BoJ's|BoK's|Lagarde|Ueda", "중앙은행 발언", ("금리", "통화정책")),
+    (r"Money Supply|Loans",             "통화·대출",          ("금리",)),
+    (r"Business Climate|Sentiment Index|ZEW|Ifo", "기업심리",  ("경기",)),
+]
+
+# 같은 지표의 MoM/YoY/QoQ 를 구분해 남기기 위한 접미사
+_QUAL = re.compile(r"\((MoM|YoY|QoQ|Q/Q|M/M|Y/Y)\)", re.I)
+
+# ── 태그 → 영향받는 시황 자산(quotes.INSTRUMENTS 의 이름)
+ASSET_TAGS = {
+    "오일":     {"원유", "경기", "무역"},
+    "금":       {"금리", "물가", "통화정책", "환율"},
+    "나스닥":   {"금리", "물가", "고용", "통화정책", "경기", "소비"},
+    "코스피":   {"금리", "고용", "무역", "경기", "제조", "통화정책", "수급"},
+    "비트코인": {"금리", "통화정책"},
+}
+
+# ── 태그 → 한국 업종·테마 키워드. 업종명에 이 단어가 들어가면 연결한다.
+SECTOR_TAGS = {
+    "원유":     ("정유", "화학", "에너지", "가스", "조선"),
+    "금리":     ("은행", "보험", "증권", "금융", "건설", "리츠", "부동산"),
+    "물가":     ("음식료", "유통", "필수소비", "화장품"),
+    "고용":     ("유통", "서비스"),
+    "무역":     ("조선", "해운", "운송", "철강", "무역", "항공"),
+    "제조":     ("반도체", "기계", "전기", "전자", "자동차", "철강", "부품"),
+    "경기":     ("반도체", "철강", "화학", "기계", "조선", "해운"),
+    "서비스":   ("인터넷", "소프트웨어", "게임", "미디어", "엔터"),
+    "소비":     ("유통", "화장품", "의류", "음식료", "면세"),
+    "통화정책": ("은행", "증권", "보험", "금융"),
+    "환율":     ("항공", "여행", "수입", "정유"),
+}
+
+PROVIDERS: dict = {}
+
+
+def provider(name):
+    """소스 등록용 데코레이터. fn(start, end) -> [Event]"""
+    def deco(fn):
+        PROVIDERS[name] = fn
+        return fn
+    return deco
+
+
+def _classify(name: str):
+    """이벤트명 → (한글표기, 태그). 매칭 실패면 (None, 빈집합) — 원문을 그대로 쓴다."""
+    for pat, kr, tags in NAME_MAP:
+        if re.search(pat, name, re.I):
+            m = _QUAL.search(name)
+            if m:                       # 소매판매(MoM) / 소매판매(YoY) 를 따로 남긴다
+                kr = f"{kr}({m.group(1).upper().replace('/', '')})"
+            return kr, set(tags)
+    return None, set()
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+@provider("fxstreet")
+def _fxstreet(start: datetime, end: datetime) -> list:
+    q = "?" + "".join(f"&volatilities={v}" for v in VOLS) \
+            + "".join(f"&countries={c}" for c in COUNTRIES)
+    url = FXS.format(a=start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                     b=end.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")) + q
+    try:
+        r = requests.get(url, headers=UA, timeout=20)
+        if r.status_code != 200:
+            return []
+        rows = r.json()
+    except Exception:
+        return []
+    out = []
+    for e in rows:
+        try:
+            when = datetime.strptime(e["dateUtc"][:19], "%Y-%m-%dT%H:%M:%S") \
+                           .replace(tzinfo=UTC).astimezone(KST)
+        except Exception:
+            continue
+        kr, tags = _classify(e.get("name") or "")
+        out.append({
+            "when": when, "country": e.get("countryCode") or "",
+            "name": (e.get("name") or "").strip(), "name_kr": kr,
+            "actual": _num(e.get("actual")), "consensus": _num(e.get("consensus")),
+            "previous": _num(e.get("previous")), "unit": e.get("unit"),
+            "vol": e.get("volatility") or "", "dev": _num(e.get("ratioDeviation")),
+            "better": e.get("isBetterThanExpected"),
+            "speech": bool(e.get("isSpeech")), "tags": tags, "src": "fxstreet",
+        })
+    return out
+
+
+@provider("kr_expiry")
+def _kr_expiry(start: datetime, end: datetime) -> list:
+    """코스피200 선물·옵션 만기일 — 외부 소스 없이 규칙으로 계산한다.
+
+    옵션만기는 매월 둘째 목요일, 3·6·9·12월은 선물까지 겹치는 동시만기(네 마녀).
+    만기일 장 막판은 프로그램 청산이 몰려 종가가 흔들린다. 종가베팅 입장에선
+    뉴스로는 절대 안 잡히는데 날짜만으로 100% 미리 아는 리스크다.
+    """
+    out = []
+    d = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    while d <= end:
+        first = d.replace(day=1)
+        # 그 달 첫 목요일 + 7일 = 둘째 목요일
+        thu = first + timedelta(days=(3 - first.weekday()) % 7 + 7)
+        if start <= thu.replace(hour=15, minute=20) <= end:
+            quad = thu.month in (3, 6, 9, 12)
+            out.append({
+                "when": thu.replace(hour=15, minute=20), "country": "KR",
+                "name": "선물·옵션 동시만기(네 마녀)" if quad else "옵션 만기",
+                "name_kr": "선물·옵션 동시만기(네 마녀)" if quad else "옵션 만기",
+                "actual": None, "consensus": None, "previous": None, "unit": None,
+                "vol": "HIGH" if quad else "MEDIUM", "dev": None, "better": None,
+                "speech": False, "tags": {"수급"},
+                "note": "장 막판 프로그램 청산 물량 주의", "src": "kr_expiry",
+            })
+        # 다음 달 1일로
+        d = (first + timedelta(days=32)).replace(day=1)
+    return out
+
+
+@provider("custom")
+def _custom(start: datetime, end: datetime) -> list:
+    """사용자가 직접 넣는 일정. data/events.json (없으면 조용히 건너뜀).
+
+    형식: [{"when": "2026-09-11 15:30", "name": "9월 옵션만기",
+            "country": "KR", "vol": "HIGH", "tags": ["수급"], "note": "..."}]
+    when 은 KST. tags 를 적으면 자동으로 자산·업종에 연결된다.
+    """
+    if not os.path.exists(CUSTOM_PATH):
+        return []
+    try:
+        with open(CUSTOM_PATH, encoding="utf-8") as f:
+            rows = json.load(f)
+    except Exception:
+        return []
+    if isinstance(rows, dict):          # {"_설명": ..., "events": [...]} 형태도 허용
+        rows = rows.get("events") or []
+    out = []
+    for e in rows if isinstance(rows, list) else []:
+        try:
+            s = str(e["when"]).strip()
+            fmt = "%Y-%m-%d %H:%M" if " " in s else "%Y-%m-%d"
+            when = datetime.strptime(s, fmt).replace(tzinfo=KST)
+        except Exception:
+            continue
+        if not (start <= when <= end):
+            continue
+        kr, tags = _classify(e.get("name") or "")
+        out.append({
+            "when": when, "country": e.get("country") or "KR",
+            "name": e.get("name") or "", "name_kr": e.get("name_kr") or kr,
+            "actual": _num(e.get("actual")), "consensus": _num(e.get("consensus")),
+            "previous": _num(e.get("previous")), "unit": e.get("unit"),
+            "vol": (e.get("vol") or "HIGH").upper(), "dev": None, "better": None,
+            "speech": False, "tags": set(e.get("tags") or []) | tags,
+            "note": e.get("note"), "src": "custom",
+        })
+    return out
+
+
+def _rank(e):
+    """중복 후보 중 무엇을 남길지. 수치가 있는 헤드라인 > 중요도 > 이름 길이."""
+    return (e.get("actual") is not None or e.get("consensus") is not None,
+            e.get("vol") == "HIGH", -len(e.get("name") or ""))
+
+
+def collect(start: datetime, end: datetime, only=None) -> list:
+    """등록된 모든 프로바이더에서 [start, end] 구간 일정을 모아 시간순 정렬.
+
+    FXStreet 는 한 발표의 하위지표를 개별 행으로 준다(ISM 서비스업이 헤드라인 +
+    고용/신규주문/가격 4행). 브리핑에는 헤드라인만 필요하므로
+    (시각, 표기명)이 같으면 수치가 있는 쪽 하나만 남긴다.
+    """
+    out = []
+    for name, fn in PROVIDERS.items():
+        if only and name not in only:
+            continue
+        try:
+            out.extend(fn(start, end) or [])
+        except Exception:
+            continue
+    best = {}
+    for e in out:
+        k = (e["when"], e.get("name_kr") or e.get("name"), e.get("country"))
+        if k not in best or _rank(e) > _rank(best[k]):
+            best[k] = e
+    return sorted(best.values(), key=lambda e: e["when"])
+
+
+def label(e) -> str:
+    """'🇺🇸 ISM 서비스업' 처럼 한 줄 표기용 이름.
+
+    연설은 누가 말하느냐가 핵심이라 번역명 대신 원문(발언자 포함)을 쓴다.
+    """
+    nm = e.get("name") if e.get("speech") else (e.get("name_kr") or e.get("name"))
+    return f"{FLAG.get(e['country'], e['country'])} {nm or ''}"
+
+
+def value_text(e) -> str:
+    """'54.6 (예상 55.2 · 하회)' — 실제치가 없으면 예상치만."""
+    u = e.get("unit") or ""
+    fmt = lambda v: f"{v:g}{u}" if v is not None else None
+    a, c = fmt(e.get("actual")), fmt(e.get("consensus"))
+    if a is None:
+        return f"예상 {c}" if c else ""
+    if c is None:
+        return a
+    tail = ""
+    if e.get("dev") is not None:
+        tail = " · " + ("상회" if e["dev"] > 0 else ("하회" if e["dev"] < 0 else "부합"))
+        if abs(e["dev"]) >= 0.5:
+            tail += "(서프라이즈)"
+    return f"{a} (예상 {c}{tail})"
+
+
+def link_assets(e, rows) -> list:
+    """이 일정이 설명할 수 있는 시황 자산 [(이름, 등락률)]. 유의미 변동만."""
+    if not e.get("tags"):
+        return []
+    out = []
+    for r in rows or []:
+        if r.get("chg_pct") is None or not r.get("significant"):
+            continue
+        if e["tags"] & ASSET_TAGS.get(r["name"], set()):
+            out.append((r["name"], r["chg_pct"]))
+    return out
+
+
+def link_sectors(e, names) -> list:
+    """이 일정과 태그가 맞는 업종·테마 이름들."""
+    if not e.get("tags") or not names:
+        return []
+    words = set()
+    for t in e["tags"]:
+        words |= set(SECTOR_TAGS.get(t, ()))
+    out, seen = [], set()
+    for n in names:                     # 업종과 테마에 같은 이름이 있어 중복 제거
+        if n not in seen and any(w in n for w in words):
+            seen.add(n); out.append(n)
+    return out
+
+
+def split(events, win_start, win_end, now=None):
+    """(창 안에서 발표된 것, 앞으로 예정된 것)."""
+    now = now or datetime.now(KST)
+    done = [e for e in events if win_start <= e["when"] <= win_end]
+    ahead = [e for e in events if e["when"] > max(now, win_end)]
+    return done, ahead
+
+
+def _next_open(now: datetime) -> datetime:
+    """다음 한국 정규장 시가(09:00). 종가베팅은 시가매도라 여기까지가 노출 구간이다."""
+    o = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    if now >= o:
+        o += timedelta(days=1)
+    while o.weekday() >= 5:            # 주말이면 월요일로
+        o += timedelta(days=1)
+    return o
+
+
+def stars(e) -> str:
+    return "***" if e.get("vol") == "HIGH" else "**"
+
+
+def brief(events, win, quote_rows=None, sector_names=None, now=None,
+          max_done: int = 4, max_ahead: int = 5) -> dict:
+    """렌더러가 그대로 찍을 수 있는 형태로 가공.
+
+    done  — 변동폭 창 안에서 발표된 일정 + 그것이 설명하는 자산·업종
+    ahead — 앞으로의 일정. 다음 시가(09:00)까지는 오버나이트 노출이라 따로 표시한다.
+    """
+    now = now or datetime.now(KST)
+    done_raw, ahead_raw = split(events, win["start"], win["end"], now)
+    open_at = _next_open(now)
+
+    done = []
+    for e in sorted(done_raw, key=lambda x: (x.get("vol") != "HIGH", x["when"])):
+        assets = link_assets(e, quote_rows)
+        sectors = link_sectors(e, sector_names)
+        # 수치도 없고 연결도 안 되면 브리핑에 아무 정보가 없다
+        if not assets and not sectors and e.get("actual") is None and not e.get("speech"):
+            continue
+        done.append({"when": e["when"], "label": label(e), "stars": stars(e),
+                     "value": value_text(e), "assets": assets,
+                     "sectors": sectors[:4], "note": e.get("note")})
+        if len(done) >= max_done:
+            break
+
+    # 예정 목록은 자리가 몇 줄뿐이라 '가까운 순'으로 채우면 유럽 중간지표가
+    # 다 차지하고 정작 미국 고용지표가 밀린다. 중요도로 먼저 거른 뒤 시간순 정렬.
+    cand = []
+    for e in ahead_raw:
+        overnight = e["when"] <= open_at
+        high = e.get("vol") == "HIGH"
+        if overnight:
+            keep = high or e.get("country") in ("US", "KR")
+        else:
+            keep = high and e.get("country") in ("US", "KR", "CN")
+        if not keep:
+            continue
+        cand.append((not high, e["when"], overnight, e))
+    cand.sort(key=lambda x: (x[0], x[1]))          # HIGH 먼저, 그 안에서 시간순
+    ahead = [{"when": e["when"], "label": label(e), "stars": stars(e),
+              "value": value_text(e), "overnight": ov, "note": e.get("note")}
+             for _, _, ov, e in cand[:max_ahead]]
+    ahead.sort(key=lambda a: a["when"])            # 표시는 다시 시간순
+
+    return {"done": done, "ahead": ahead, "n_done": len(done_raw),
+            "open_at": open_at, "win": (win["start"], win["end"])}
+
+
+if __name__ == "__main__":
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8")
+    now = datetime.now(KST)
+    ev = collect(now - timedelta(hours=12), now + timedelta(hours=36))
+    print(f"일정 {len(ev)}건 (프로바이더: {', '.join(PROVIDERS)})\n")
+    for e in ev:
+        mark = "완료" if e["when"] <= now else "예정"
+        star = "★" * (3 if e["vol"] == "HIGH" else 2)
+        print(f"  {e['when']:%m-%d %H:%M} [{mark}] {star:<3} {label(e):<22} "
+              f"{value_text(e):<34} tags={','.join(sorted(e['tags'])) or '-'}")

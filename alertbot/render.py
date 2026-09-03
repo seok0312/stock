@@ -139,6 +139,49 @@ def section_kr_impact(impacts):
     return "\n".join(lines)
 
 
+def _stars(n):
+    return "★" * len(n)
+
+
+def section_events(ev):
+    """경제 일정 — 변동의 '사전에 알던 근거'와 오버나이트 리스크.
+
+    뉴스는 사후 서술이라 근거가 약하다. 일정은 발표시각·예상치·실제치가 숫자로
+    남아 검증되고, 종가베팅은 시가매도라 다음 시가까지 무엇이 예정돼 있는지가
+    실제 손익을 좌우한다. 그래서 '지나간 근거'와 '앞으로의 노출'을 함께 낸다.
+    """
+    if not ev:
+        return ""
+    lines = []
+    done = ev.get("done") or []
+    if done:
+        lines.append("\n🗓 <b>일정 대조</b> <i>(변동폭 구간 발표)</i>")
+        for d in done:
+            v = f" {esc(d['value'])}" if d.get("value") else ""
+            lines.append(f"  · {d['when']:%H:%M} <b>{esc(d['label'])}</b> "
+                         f"<i>{_stars(d['stars'])}</i>{v}")
+            if d.get("assets"):
+                seg = " · ".join(f"{esc(n)} {p:+.2f}%" for n, p in d["assets"])
+                lines.append(f"      → {seg}")
+            if d.get("sectors"):
+                lines.append(f"      → {esc(', '.join(d['sectors']))}")
+            if d.get("note"):
+                lines.append(f"      <i>{esc(d['note'])[:120]}</i>")
+    elif ev.get("n_done") == 0:
+        lines.append("\n🗓 <b>일정 대조</b>")
+        lines.append("  <i>구간 내 예정 발표 없음 — 오늘 변동은 수급·개별 요인</i>")
+
+    ahead = ev.get("ahead") or []
+    if ahead:
+        lines.append("\n⏳ <b>예정</b> <i>(⚠️ 는 다음 시가 전 — 오버나이트 노출)</i>")
+        for a in ahead:
+            mark = "⚠️" if a.get("overnight") else "·"
+            v = f" {esc(a['value'])}" if a.get("value") else ""
+            lines.append(f"  {mark} {a['when']:%m-%d %H:%M} <b>{esc(a['label'])}</b> "
+                         f"<i>{_stars(a['stars'])}</i>{v}")
+    return "\n".join(lines)
+
+
 def section_leaders(ld, news=None, title="🎯 <b>당일 주도주 후보</b>"):
     """leaders.fetch_leaders() 결과 + 종목별 원인 뉴스 링크."""
     if not ld or not ld.get("rows"):
@@ -313,9 +356,11 @@ def section_flows(fl, cmp=None):
 
 def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
           flows=None, flows_cmp=None, kr_upjong=None, kr_themes=None, kr_when=None,
-          us_leaders=None, topic_news=None, leader_news=None, footer=None):
+          us_leaders=None, topic_news=None, leader_news=None, events=None,
+          footer=None):
     parts = [header(win), section_quotes(win, news)]
-    for s in (section_flows(flows, flows_cmp),
+    for s in (section_events(events),
+              section_flows(flows, flows_cmp),
               section_kr_sectors(kr_upjong, kr_themes, kr_when or "장중", topic_news),
               section_leaders(leaders, leader_news),
               section_us_sectors(us_sectors or [], us_leaders, topic_news),
