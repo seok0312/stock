@@ -93,8 +93,8 @@ _QUAL = re.compile(r"\((MoM|YoY|QoQ|Q/Q|M/M|Y/Y)\)", re.I)
 ASSET_TAGS = {
     "오일":     {"원유", "경기", "무역"},
     "금":       {"금리", "물가", "통화정책", "환율"},
-    "나스닥":   {"금리", "물가", "고용", "통화정책", "경기", "소비"},
-    "코스피":   {"금리", "고용", "무역", "경기", "제조", "통화정책", "수급"},
+    "나스닥":   {"금리", "물가", "고용", "통화정책", "경기", "소비", "실적"},
+    "코스피":   {"금리", "고용", "무역", "경기", "제조", "통화정책", "수급", "실적"},
     "비트코인": {"금리", "통화정책"},
 }
 
@@ -111,7 +111,15 @@ SECTOR_TAGS = {
     "소비":     ("유통", "화장품", "의류", "음식료", "면세"),
     "통화정책": ("은행", "증권", "보험", "금융"),
     "환율":     ("항공", "여행", "수입", "정유"),
+    "실적":     ("반도체", "전자", "부품", "IT", "소프트웨어"),
 }
+
+# 미국 실적: 시총이 이 이상이거나 아래 목록에 들면 한국 개장에 영향이 있다고 본다.
+# 반도체·AI 체인은 시총이 기준에 못 미쳐도 삼성전자·SK하이닉스를 직접 움직인다.
+EARN_MIN_CAP = 200e9
+EARN_ALWAYS = {"NVDA", "AVGO", "TSM", "MU", "AMAT", "LRCX", "KLAC", "ASML",
+               "INTC", "AMD", "ORCL", "DELL", "SMCI", "MRVL", "WDC", "STX"}
+NASDAQ_EARN = "https://api.nasdaq.com/api/calendar/earnings?date={d}"
 
 PROVIDERS: dict = {}
 
@@ -172,6 +180,50 @@ def _fxstreet(start: datetime, end: datetime) -> list:
             "better": e.get("isBetterThanExpected"),
             "speech": bool(e.get("isSpeech")), "tags": tags, "src": "fxstreet",
         })
+    return out
+
+
+@provider("us_earnings")
+def _us_earnings(start: datetime, end: datetime) -> list:
+    """미국 대형주 실적. 나스닥 공식 캘린더(시총 포함)라 '중요한 것만' 거르기 쉽다.
+
+    발표 시각은 pre-market / after-hours 구분만 주므로 KST 로 근사한다
+    (장전 21:00 / 장후 다음날 05:30, 미 동부 서머타임 기준).
+    한국 기업 실적은 이 캘린더에 없다 — events_custom.json 으로 넣으면 된다.
+    """
+    hdr = {"User-Agent": UA["User-Agent"], "Accept": "application/json, text/plain, */*",
+           "Origin": "https://www.nasdaq.com", "Referer": "https://www.nasdaq.com/"}
+    out, seen = [], set()
+    d = start.date()
+    while d <= end.date() and len(seen) < 5:
+        seen.add(d)
+        try:
+            r = requests.get(NASDAQ_EARN.format(d=d.strftime("%Y-%m-%d")),
+                             headers=hdr, timeout=20)
+            rows = (r.json().get("data") or {}).get("rows") or [] if r.status_code == 200 else []
+        except Exception:
+            rows = []
+        for x in rows:
+            sym = (x.get("symbol") or "").strip().upper()
+            cap = _num(str(x.get("marketCap") or "").replace("$", "").replace(",", ""))
+            if sym not in EARN_ALWAYS and not (cap and cap >= EARN_MIN_CAP):
+                continue
+            t = x.get("time") or ""
+            base = datetime.combine(d, datetime.min.time()).replace(tzinfo=KST)
+            when = (base + timedelta(hours=21) if "pre-market" in t
+                    else base + timedelta(days=1, hours=5, minutes=30))
+            if not (start <= when <= end):
+                continue
+            eps = (x.get("epsForecast") or "").strip()
+            out.append({
+                "when": when, "country": "US",
+                "name": f"{sym} 실적", "name_kr": f"{sym} 실적",
+                "actual": None, "consensus": None, "previous": None, "unit": None,
+                "vol": "HIGH", "dev": None, "better": None, "speech": False,
+                "tags": {"실적"}, "src": "us_earnings",
+                "note": f"EPS 예상 {eps}" if eps else None,
+            })
+        d += timedelta(days=1)
     return out
 
 
@@ -350,18 +402,28 @@ def stars(e) -> str:
 
 
 def brief(events, win, quote_rows=None, sector_names=None, now=None,
-          max_done: int = 4, max_ahead: int = 5) -> dict:
+          max_done: int = 3, max_ahead: int = 4, only_high: bool = True) -> dict:
     """렌더러가 그대로 찍을 수 있는 형태로 가공.
 
     done  — 변동폭 창 안에서 발표된 일정 + 그것이 설명하는 자산·업종
     ahead — 앞으로의 일정. 다음 시가(09:00)까지는 오버나이트 노출이라 따로 표시한다.
+
+    only_high: 중요도 최상(★★★)만 남긴다. 중간 지표까지 다 실으면 줄이 길어져
+    결국 아무도 안 읽는다 — 없는 것과 같아진다. 수집은 그대로 하고 표시만 좁힌다.
     """
     now = now or datetime.now(KST)
     done_raw, ahead_raw = split(events, win["start"], win["end"], now)
     open_at = _next_open(now)
+    try:
+        import reactions
+        rrows = reactions.load_all()
+    except Exception:
+        reactions, rrows = None, []
 
     done = []
-    for e in sorted(done_raw, key=lambda x: (x.get("vol") != "HIGH", x["when"])):
+    for e in sorted(done_raw, key=lambda x: x["when"]):
+        if only_high and e.get("vol") != "HIGH":
+            continue
         assets = link_assets(e, quote_rows)
         sectors = link_sectors(e, sector_names)
         # 수치도 없고 연결도 안 되면 브리핑에 아무 정보가 없다
@@ -377,19 +439,31 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
     # 다 차지하고 정작 미국 고용지표가 밀린다. 중요도로 먼저 거른 뒤 시간순 정렬.
     cand = []
     for e in ahead_raw:
-        overnight = e["when"] <= open_at
         high = e.get("vol") == "HIGH"
-        if overnight:
-            keep = high or e.get("country") in ("US", "KR")
-        else:
-            keep = high and e.get("country") in ("US", "KR", "CN")
-        if not keep:
+        if only_high and not high:
             continue
-        cand.append((not high, e["when"], overnight, e))
+        if e.get("country") not in ("US", "KR", "CN"):   # 코스피에 직접 닿는 곳만
+            continue
+        cand.append((not high, e["when"], e["when"] <= open_at, e))
+    # 같은 시각·같은 나라는 한 번의 발표다(고용보고서 = 비농업고용 + 시간당임금 + 실업률).
+    # 넷을 다 실으면 네 줄이 같은 사건으로 채워지므로 헤드라인 하나만 남긴다.
+    # 헤드라인은 (MOM)/(YOY) 꼬리표가 없는 쪽으로 본다.
+    def _headline(c):
+        e = c[3]
+        return ("(" not in (e.get("name_kr") or ""),   # 꼬리표 없는 헤드라인 우선
+                not c[0])                              # 그다음 중요도
+    head = {}
+    for c in cand:
+        k = (c[3]["when"], c[3].get("country"))
+        if k not in head or _headline(c) > _headline(head[k]):
+            head[k] = c
+    cand = list(head.values())
     cand.sort(key=lambda x: (x[0], x[1]))          # HIGH 먼저, 그 안에서 시간순
-    ahead = [{"when": e["when"], "label": label(e), "stars": stars(e),
-              "value": value_text(e), "overnight": ov, "note": e.get("note")}
-             for _, _, ov, e in cand[:max_ahead]]
+    ahead = []
+    for _, _, ov, e in cand[:max_ahead]:
+        ahead.append({"when": e["when"], "label": label(e), "stars": stars(e),
+                      "value": value_text(e), "overnight": ov, "note": e.get("note"),
+                      "stat": reactions.summary_for(e, rows=rrows) if reactions else None})
     ahead.sort(key=lambda a: a["when"])            # 표시는 다시 시간순
 
     return {"done": done, "ahead": ahead, "n_done": len(done_raw),

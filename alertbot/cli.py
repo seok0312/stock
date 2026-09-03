@@ -192,7 +192,7 @@ def main(argv=None):
             except Exception as e:
                 print(f"  주도주 뉴스 실패(계속 진행): {type(e).__name__}: {e}")
 
-    ev_ctx = None
+    ev_ctx, evs = None, []
     if not args.no_events:
         # 일정은 뉴스와 달리 '변동 전에 이미 알던 사실'이라 근거로서 더 강하다.
         # 창 시작 전부터 다음날까지 훑어 (발표된 것, 앞으로 올 것)으로 나눈다.
@@ -215,6 +215,16 @@ def main(argv=None):
                        flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)
+
+    # 반응 로그는 전송 뒤에 — 자산당 봉 조회가 붙어 알림이 늦어지면 안 된다.
+    if evs and not args.no_events:
+        try:
+            import reactions
+            n = reactions.log(evs, now=now)
+            if n:
+                print(f"  반응 로그 {n}건 기록 (누적 {len(reactions.load_all())})")
+        except Exception as e:
+            print(f"  반응 로그 실패(무시): {type(e).__name__}: {e}")
     return 0
 
 
