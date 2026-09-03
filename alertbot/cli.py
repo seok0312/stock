@@ -144,7 +144,8 @@ def main(argv=None):
                     import news as nm_mod
                     for nm in strong:
                         tks = [x["ticker"] for x in us_leaders.get(nm, [])]
-                        it = nm_mod.topic_news(nm, "us", hours=24, limit=1, tickers=tks)
+                        it = nm_mod.topic_news(nm, "us", limit=1, tickers=tks,
+                                               start=win["start"], end=win["end"])
                         if it:
                             topic_news[nm] = it
             except Exception as e:
@@ -163,7 +164,8 @@ def main(argv=None):
                     names = [x["name"] for x in (kr_upjong or {}).get("up", [])[:3]]
                     names += [x["name"] for x in (kr_themes or {}).get("up", [])[:3]]
                     for nm in names:
-                        it = nm_mod.topic_news(nm, "kr", hours=24, limit=1)
+                        it = nm_mod.topic_news(nm, "kr", limit=1,
+                                               start=win["start"], end=win["end"])
                         if it:
                             topic_news[nm] = it
             except Exception as e:
@@ -178,11 +180,12 @@ def main(argv=None):
             print(f"  주도주 수집 실패(계속 진행): {type(e).__name__}: {e}")
         if ld and not args.no_news:
             # 왜 오르는지가 종가베팅 판단의 핵심이라 종목별 기사를 붙인다.
-            # 급등 사유는 당일 뉴스라 12시간으로 좁힌다.
+            # 검색 구간은 시황과 동일하게 변동폭 계산 구간으로 제한한다.
             try:
                 import news as nm_mod
                 for r in (ld.get("rows") or [])[:6]:
-                    it = nm_mod.topic_news(r["종목명"], "kr", hours=12, limit=1)
+                    it = nm_mod.topic_news(r["종목명"], "kr", limit=1,
+                                           start=win["start"], end=win["end"])
                     if it:
                         leader_news[r["종목명"]] = it
             except Exception as e:

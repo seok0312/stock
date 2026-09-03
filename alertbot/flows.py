@@ -64,9 +64,9 @@ def fetch_market(code: str) -> dict | None:
             "외국인": _num(d.get("foreignValue")),
             "기관": _num(d.get("institutionalValue"))}
     # 모든 주체의 순매수 합은 0이다(누가 사면 누가 팔았으므로).
-    # 네이버가 3분류만 주므로 잔여분 = 기타법인 + 기타외국인. 파생값이라 별표 표기.
+    # 네이버가 3분류만 주므로 잔여분 = 기타법인. 키움 폴백일 때만 쓰이는 파생값.
     if all(v is not None for v in flow.values()):
-        flow["기타*"] = -(flow["개인"] + flow["외국인"] + flow["기관"])
+        flow["기타법인"] = -(flow["개인"] + flow["외국인"] + flow["기관"])
     p = j.get("programTrendInfo") or {}
     return {
         "name": j.get("stockName"), "code": code,
@@ -197,7 +197,37 @@ def summary(short: int = 5, long: int = 20):
                 ref_market[lab] = d
     cur["ref"] = ref
     cur["ref_market"] = ref_market
+    apply_kiwoom(cur)
     return cur
+
+
+def apply_kiwoom(cur: dict) -> str:
+    """순매수·프로그램을 키움(KRX+NXT 통합) 값으로 덮어쓴다. 반환: 실제 사용한 소스명.
+
+    네이버는 KRX 거래분만 주므로 NXT 가 통째로 빠진다. 외국인처럼 NXT 비중이 큰
+    주체는 방향이 뒤집히기도 해서(kflows 모듈 주석의 실측 참조) 키움을 우선한다.
+    키움이 실패하면 네이버 값을 그대로 두고 'naver' 를 반환한다.
+    """
+    cur["flow_src"] = "naver"
+    try:
+        import kflows
+        k = kflows.fetch()
+    except Exception:
+        k = None
+    if not k:
+        return "naver"
+    used = False
+    for m in cur.get("rows", []):
+        d = k.get(m.get("label"))
+        if not d:
+            continue
+        if d.get("flow"):
+            m["flow_eok"] = dict(d["flow"]); used = True
+        if d.get("program"):
+            m["program_eok"] = dict(d["program"]); used = True
+    if used:
+        cur["flow_src"] = "kiwoom"
+    return cur["flow_src"]
 
 
 if __name__ == "__main__":

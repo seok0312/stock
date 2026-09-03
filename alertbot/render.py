@@ -36,23 +36,28 @@ def _link(it, cut=90):
 
 
 def section_quotes(win, news=None):
-    """시황 + 유의미 변동 자산의 원인 뉴스를 그 자리 바로 아래에 붙인다.
+    """시황 5종을 먼저 순서대로 나열하고, 그 아래에 자산별 원인 뉴스를 묶는다.
 
-    별도 뉴스 섹션으로 빼면 어느 자산 기사인지 다시 대조해야 하므로
-    변동률 바로 밑에 링크를 두는 편이 읽기 쉽다.
+    변동률 사이사이에 링크가 끼면 5종을 한눈에 비교하기 어렵다.
+    목록을 먼저 붙여 훑게 하고, 근거 기사는 그 밑에 모은다.
     """
     news = news or {}
     lines = [f"\n📊 <b>시황</b> <i>({_span(win)} 변동)</i>"]
     for r in win["rows"]:
-        nm = r["name"]
         if r["chg_pct"] is None:
-            lines.append(f"  {esc(nm)} — 데이터 없음")
+            lines.append(f"  {esc(r['name'])} — 데이터 없음")
             continue
         star = " ★" if r["significant"] else ""
         sign = "🔺" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
-        lines.append(f"  {sign} <b>{esc(nm)}</b> {_fmt_px(r['end_px'], r['decimals'])}"
+        lines.append(f"  {sign} <b>{esc(r['name'])}</b> "
+                     f"{_fmt_px(r['end_px'], r['decimals'])}"
                      f"  <b>{r['chg_pct']:+.2f}%</b>{star}")
-        for it in (news.get(nm) or [])[:2]:
+    for r in win["rows"]:
+        items = news.get(r["name"]) or []
+        if not items:
+            continue
+        lines.append(f"  📰 <b>{esc(r['name'])}</b> <i>{r['chg_pct']:+.2f}%</i>")
+        for it in items[:2]:
             lines.append(f"      {_link(it)}")
     return "\n".join(lines)
 
@@ -180,7 +185,8 @@ def _flow_table(groups, cmp_map):
     (store 비교가 코스피 기준으로 계산되므로).
     """
     KEYS = [("개인", "개인", "indiv"), ("외국인", "외국인", "foreign"),
-            ("기관", "기관", "inst"), ("비차익", "비차익", "nonarb")]
+            ("기관", "기관", "inst"), ("기타법인", "기타법인", "etc"),
+            ("비차익", "비차익", "nonarb")]
     titles = [g[0] for g in groups]
     label_w = max(_dw(lab) for _, lab, _ in KEYS) + 1
 
@@ -220,10 +226,9 @@ def _heat(p):
 # 거래대금 표시 순서 — 선물이 규모가 가장 크고 방향을 먼저 보여주므로 앞에 둔다
 MARKET_ORDER = ("선물", "코스피", "코스닥")
 
-# 순매수 표에 쓰는 시장. 선물은 제외한다 —
-# 네이버 FUT dealTrendInfo 는 단위(계약/억원)가 문서화돼 있지 않아 검증할 수 없고,
-# 현물에 더하면 외국인 현물매도(-0.5조)가 선물매수와 상쇄돼 -0.0조로 보인다.
-# (거래대금 쪽 선물은 계약수×종가×25만원으로 실측 검증돼 그대로 둔다)
+# 순매수 표에 쓰는 시장. 키움 ka10051 이 커버하는 현물 두 시장이다.
+# 선물은 키움 국내주식 REST 에 투자자별 TR 이 없고, 네이버 FUT 값은 단위(계약/억원)가
+# 문서화돼 있지 않아 검증할 수 없어 뺐다. 거래대금 쪽 선물은 실측 검증돼 그대로 둔다.
 FLOW_MARKETS = ("코스피", "코스닥")
 
 
@@ -269,7 +274,7 @@ def section_flows(fl, cmp=None):
         src = "같은 시각" if cmp.get("amount") else "종가"
         lines.append(f"  <i>{src}평균 대비 · " + " · ".join(seg) + "</i>")
 
-    KEYS = ("개인", "외국인", "기관")
+    KEYS = ("개인", "외국인", "기관", "기타법인")
 
     def one(name):
         src = rows.get(name) or {}
@@ -282,12 +287,15 @@ def section_flows(fl, cmp=None):
 
     groups = [(m, one(m)) for m in FLOW_MARKETS]
     if any(g[1] for g in groups):
-        lines.append("\n💵 <b>순매수</b> <i>(조원, ▲▼는 코스피 5일평균 대비)</i>")
+        fsrc = "키움 KRX+NXT" if fl.get("flow_src") == "kiwoom" else "네이버 KRX"
+        lines.append(f"\n💵 <b>순매수</b> <i>(조원 · {esc(fsrc)} · "
+                     f"▲▼는 코스피 5일평균 대비)</i>")
         lines.append(_flow_table(groups, cmp))
 
         note = []
         for key, name in (("foreign", "외국인"), ("inst", "기관"),
-                          ("indiv", "개인"), ("nonarb", "비차익")):
+                          ("indiv", "개인"), ("etc", "기타법인"),
+                          ("nonarb", "비차익")):
             c = cmp.get(key)
             if not c or c.get("z") is None:
                 continue
@@ -298,7 +306,8 @@ def section_flows(fl, cmp=None):
         if note:
             lines.append("  ⚡ " + " / ".join(note) +
                          f" <i>· {cmp.get('n_long', 0)}일 기준</i>")
-        lines.append("  <i>* 비차익은 거래방식 축이라 위 3개와 중복 집계</i>")
+        lines.append("  <i>* 개인+외국인+기관+기타법인 = 0 · "
+                     "비차익은 거래방식 축이라 위 4개와 중복 집계</i>")
     return "\n".join(lines)
 
 

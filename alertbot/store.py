@@ -162,12 +162,12 @@ def compare(slot: str, fl: dict, short: int = 5, long: int = 20,
     if per:
         out["amount_market"] = per
 
-    # 선물은 빼고 코스피 현물 기준으로 비교한다.
-    # 네이버 FUT 순매수는 단위(계약/억원)가 확인되지 않아 현물과 더할 수 없다.
+    # 코스피 현물 기준. 순매수 소스가 키움(KRX+NXT 통합)이라 선물은 들어 있지 않다.
     SPOT = ["코스피"]
     items = [("외국인", "foreign", lambda r: _flow_of(r, SPOT, "외국인")),
              ("기관", "inst", lambda r: _flow_of(r, SPOT, "기관")),
              ("개인", "indiv", lambda r: _flow_of(r, SPOT, "개인")),
+             ("기타법인", "etc", lambda r: _flow_of(r, SPOT, "기타법인")),
              ("비차익", "nonarb", lambda r: _prog_of(r, SPOT))]
     for _, name, fn in items:
         now_v = fn(cur)

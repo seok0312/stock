@@ -40,21 +40,20 @@ def _parse_pubdate(s):
     return None
 
 
-def fetch_news(asset: str, hours: int = 12, limit: int = 3):
-    """[{title, url, source, published}] — 최신순, hours 이내."""
-    q = QUERY.get(asset)
-    if not q:
-        return []
-    url = RSS.format(q=quote_plus(f"{q} when:{max(1, hours)}h"))
-    try:
-        r = requests.get(url, headers=UA, timeout=20)
-        if r.status_code != 200:
-            return []
-        root = ET.fromstring(r.content)
-    except Exception:
-        return []
+def _query_hours(start, hours):
+    """구글 when: 파라미터는 '지금부터 N시간 전'이라 창의 시작까지 덮어야 한다.
+    알람이 늦게 돌면 창 끝이 이미 과거이므로 now 기준으로 잡고 1시간 여유를 준다."""
+    if start is None:
+        return max(1, int(hours))
+    return max(1, int((datetime.now(KST) - start).total_seconds() // 3600) + 1)
 
-    cutoff = datetime.now(KST) - timedelta(hours=hours)
+
+def _pick(root, limit, start=None, end=None, spam_filter=False):
+    """RSS 아이템 → [{title,url,source,published}]. 창이 주어지면 그 안의 기사만.
+
+    창 밖 기사를 넣으면 '이 변동의 원인'이 아닌 기사를 원인처럼 보여주게 된다.
+    발행시각을 못 읽은 항목은 검증이 안 되므로 창이 있을 때는 버린다.
+    """
     out = []
     for item in root.findall("./channel/item"):
         title = (item.findtext("title") or "").strip()
@@ -63,8 +62,15 @@ def fetch_news(asset: str, hours: int = 12, limit: int = 3):
         src = item.findtext("{http://news.google.com}source") or ""
         if not src and " - " in title:            # "제목 - 언론사" 형태 분리
             title, src = title.rsplit(" - ", 1)
-        if pub and pub < cutoff:
+        if spam_filter and any(w in title for w in _SPAM):
             continue
+        if start is not None or end is not None:
+            if pub is None:
+                continue
+            if start is not None and pub < start:
+                continue
+            if end is not None and pub > end:
+                continue
         out.append({"title": title, "url": link, "source": src.strip(),
                     "published": pub})
         if len(out) >= limit:
@@ -72,19 +78,45 @@ def fetch_news(asset: str, hours: int = 12, limit: int = 3):
     return out
 
 
-def news_for_window(win, hours: int | None = None, limit: int = 2):
+def _rss(q, hours):
+    url = RSS.format(q=quote_plus(f"{q} when:{max(1, int(hours))}h"))
+    try:
+        r = requests.get(url, headers=UA, timeout=20)
+        if r.status_code != 200:
+            return None
+        return ET.fromstring(r.content)
+    except Exception:
+        return None
+
+
+def fetch_news(asset: str, hours: int = 12, limit: int = 3, start=None, end=None):
+    """[{title, url, source, published}] — 최신순. start/end 를 주면 그 구간 기사만."""
+    q = QUERY.get(asset)
+    if not q:
+        return []
+    root = _rss(q, _query_hours(start, hours))
+    if root is None:
+        return []
+    if start is None and end is None:
+        start = datetime.now(KST) - timedelta(hours=hours)
+    return _pick(root, limit, start, end)
+
+
+def news_for_window(win, limit: int = 2):
     """변동폭 결과에서 significant 자산만 뉴스 수집. {자산명: [...]}
 
-    키는 자산명 그대로다 — 시황 각 줄 바로 아래에 링크를 붙이므로
+    검색 구간은 변동폭 계산 구간과 정확히 같다(예: 14:30 알람 → 08:00~14:30).
+    그 밖의 기사는 이 변동의 원인이 아니므로 제외한다.
+
+    키는 자산명 그대로다 — 시황 목록 아래에 자산별로 묶어 링크를 붙이므로
     렌더러가 quotes 행의 name 으로 바로 찾을 수 있어야 한다.
     """
-    if hours is None:
-        hours = max(2, round((win["end"] - win["start"]).total_seconds() / 3600))
     out = {}
     for r in win["rows"]:
         if not r["significant"]:
             continue
-        items = fetch_news(r["name"], hours=hours, limit=limit)
+        items = fetch_news(r["name"], limit=limit,
+                           start=win["start"], end=win["end"])
         if items:
             out[r["name"]] = items
     return out
@@ -156,7 +188,7 @@ US_SECTOR_Q = {
 
 
 def topic_news(name: str, kind: str = "kr", hours: int = 24, limit: int = 1,
-               tickers=None):
+               tickers=None, start=None, end=None):
     """섹터·업종·테마 이름으로 원인 뉴스 검색.
 
     kind="us": 섹터명만으로 검색하면 한국 기사가 섞이므로(예: '소재' → 색조·소재주)
@@ -169,24 +201,7 @@ def topic_news(name: str, kind: str = "kr", hours: int = 24, limit: int = 1,
         q = " OR ".join(names) if names else US_SECTOR_Q.get(name, f"미국 {name}주")
     else:
         q = f"{name} 주가 OR {name} 급등"
-    url = RSS.format(q=quote_plus(f"{q} when:{max(1, hours)}h"))
-    try:
-        r = requests.get(url, headers=UA, timeout=20)
-        if r.status_code != 200:
-            return []
-        root = ET.fromstring(r.content)
-    except Exception:
+    root = _rss(q, _query_hours(start, hours))
+    if root is None:
         return []
-    out = []
-    for item in root.findall("./channel/item"):
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        src = item.findtext("{http://news.google.com}source") or ""
-        if not src and " - " in title:
-            title, src = title.rsplit(" - ", 1)
-        if any(w in title for w in _SPAM):      # 도박·광고 스팸 제외
-            continue
-        out.append({"title": title, "url": link, "source": src.strip()})
-        if len(out) >= limit:
-            break
-    return out
+    return _pick(root, limit, start, end, spam_filter=True)
