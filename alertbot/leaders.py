@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """당일 주도주 후보 — closebet 파이프라인 재사용.
 
-closebet(c:\dev\stock\closebet)에 이미 구현·검증된 것을 그대로 호출한다:
+closebet(stock/closebet)에 이미 구현·검증된 것을 그대로 호출한다:
   screener.screen_leaders : FDR 전종목 스냅샷 → 거래대금·등락률 상위 압축
   score.score_leaders     : 키움 ka10059(외국인·기관 수급) + ka90013(프로그램)
                             을 붙여 가중합 점수화

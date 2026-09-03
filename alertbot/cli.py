@@ -159,9 +159,9 @@ def main(argv=None):
                 kr_when = "장중" if slot in ("0930", "1430") else "종가 기준"
                 if not args.no_news:
                     import news as nm_mod
-                    # 강세 업종 상위 2 + 주도 테마 상위 2 만 뉴스를 건다
-                    names = [x["name"] for x in (kr_upjong or {}).get("up", [])[:2]]
-                    names += [t["name"] for t in (kr_themes or [])[:2]]
+                    # 강세 업종·테마에만 원인 뉴스를 건다(약세는 참고용이라 이름만).
+                    names = [x["name"] for x in (kr_upjong or {}).get("up", [])[:3]]
+                    names += [x["name"] for x in (kr_themes or {}).get("up", [])[:3]]
                     for nm in names:
                         it = nm_mod.topic_news(nm, "kr", hours=24, limit=1)
                         if it:
@@ -169,17 +169,29 @@ def main(argv=None):
             except Exception as e:
                 print(f"  한국섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
-    ld = None
+    ld, leader_news = None, {}
     if slot in LEADER_SLOTS and not args.no_leaders:
         try:
             import leaders as ld_mod
             ld = ld_mod.fetch_leaders(top=8)
         except Exception as e:
             print(f"  주도주 수집 실패(계속 진행): {type(e).__name__}: {e}")
+        if ld and not args.no_news:
+            # 왜 오르는지가 종가베팅 판단의 핵심이라 종목별 기사를 붙인다.
+            # 급등 사유는 당일 뉴스라 12시간으로 좁힌다.
+            try:
+                import news as nm_mod
+                for r in (ld.get("rows") or [])[:6]:
+                    it = nm_mod.topic_news(r["종목명"], "kr", hours=12, limit=1)
+                    if it:
+                        leader_news[r["종목명"]] = it
+            except Exception as e:
+                print(f"  주도주 뉴스 실패(계속 진행): {type(e).__name__}: {e}")
 
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
                        leaders=ld, us_leaders=us_leaders, topic_news=topic_news,
+                       leader_news=leader_news,
                        flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)

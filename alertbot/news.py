@@ -72,8 +72,12 @@ def fetch_news(asset: str, hours: int = 12, limit: int = 3):
     return out
 
 
-def news_for_window(win, hours: int | None = None, limit: int = 3):
-    """변동폭 결과에서 significant 자산만 뉴스 수집. {자산명: [...]}"""
+def news_for_window(win, hours: int | None = None, limit: int = 2):
+    """변동폭 결과에서 significant 자산만 뉴스 수집. {자산명: [...]}
+
+    키는 자산명 그대로다 — 시황 각 줄 바로 아래에 링크를 붙이므로
+    렌더러가 quotes 행의 name 으로 바로 찾을 수 있어야 한다.
+    """
     if hours is None:
         hours = max(2, round((win["end"] - win["start"]).total_seconds() / 3600))
     out = {}
@@ -82,7 +86,7 @@ def news_for_window(win, hours: int | None = None, limit: int = 3):
             continue
         items = fetch_news(r["name"], hours=hours, limit=limit)
         if items:
-            out[f"{r['name']} {r['chg_pct']:+.2f}%"] = items
+            out[r["name"]] = items
     return out
 
 
