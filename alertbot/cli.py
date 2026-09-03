@@ -172,8 +172,8 @@ def main(argv=None):
             names = [x["name"] for x in (kr_upjong or {}).get("up", [])] +                     [x["name"] for x in (kr_themes or {}).get("up", [])]
             # 실적은 며칠 전부터 알아야 의미가 있어 앞쪽 지평을 넉넉히 잡는다.
             # 실제 표시 범위는 events.brief() 가 종류별로 다시 자른다.
-            evs = ev_mod.collect(win["start"] - timedelta(hours=2),
-                                 now + timedelta(days=8))
+            evs = ev_mod.collect(min(win["start"], now - timedelta(hours=24))
+                                 - timedelta(hours=2), now + timedelta(days=8))
             ev_ctx = ev_mod.brief(evs, win, quote_rows=win["rows"],
                                   sector_names=names, now=now)
             print(f"  일정 {len(evs)}건 · 구간내 {ev_ctx['n_done']} · "

@@ -343,13 +343,13 @@ def value_text(e) -> str:
     if a is None:
         return f"예상 {c}" if c else ""
     if c is None:
-        return a
+        return f"실제 {a}"
     tail = ""
     if e.get("dev") is not None:
         tail = " · " + ("상회" if e["dev"] > 0 else ("하회" if e["dev"] < 0 else "부합"))
         if abs(e["dev"]) >= 0.5:
             tail += "(서프라이즈)"
-    return f"{a} (예상 {c}{tail})"
+    return f"실제 {a} / 예상 {c}{tail}"
 
 
 def link_assets(e, rows) -> list:
@@ -412,7 +412,10 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
     결국 아무도 안 읽는다 — 없는 것과 같아진다. 수집은 그대로 하고 표시만 좁힌다.
     """
     now = now or datetime.now(KST)
-    done_raw, ahead_raw = split(events, win["start"], win["end"], now)
+    # 발표 완료는 변동폭 창이 아니라 최근 24시간으로 본다. 창(예: 08:00~14:30)만
+    # 보면 전날 밤 미국 지표가 통째로 빠지는데, 그게 한국 개장의 주된 근거다.
+    done_raw = [e for e in events if now - timedelta(hours=24) <= e["when"] <= now]
+    _, ahead_raw = split(events, win["start"], win["end"], now)
     open_at = _next_open(now)
     try:
         import reactions
@@ -421,19 +424,22 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
         reactions, rrows = None, []
 
     done = []
-    for e in sorted(done_raw, key=lambda x: x["when"]):
+    for e in sorted(done_raw, key=lambda x: x["when"], reverse=True):
         if only_high and e.get("vol") != "HIGH":
             continue
-        assets = link_assets(e, quote_rows)
-        sectors = link_sectors(e, sector_names)
-        # 수치도 없고 연결도 안 되면 브리핑에 아무 정보가 없다
-        if not assets and not sectors and e.get("actual") is None and not e.get("speech"):
-            continue
+        if e.get("actual") is None and not e.get("note"):
+            continue          # 수치도 메모도 없으면 브리핑에 담을 내용이 없다
+        # 창 안의 발표만 시황 등락률과 나란히 둔다. 20시간 전 지표를 오늘 창의
+        # 등락률과 연결하면 인과처럼 보이지만 근거가 없다.
+        in_win = win["start"] <= e["when"] <= win["end"]
         done.append({"when": e["when"], "label": label(e), "stars": stars(e),
-                     "value": value_text(e), "assets": assets,
-                     "sectors": sectors[:4], "note": e.get("note")})
+                     "value": value_text(e),
+                     "assets": link_assets(e, quote_rows) if in_win else [],
+                     "react": reactions.react_text(e, rows=rrows) if reactions else None,
+                     "note": e.get("note")})
         if len(done) >= max_done:
             break
+    done.sort(key=lambda d: d["when"])
 
     # 예정 목록은 자리가 몇 줄뿐이라 '가까운 순'으로 채우면 유럽 중간지표가
     # 다 차지하고 정작 미국 고용지표가 밀린다. 중요도로 먼저 거른 뒤 시간순 정렬.

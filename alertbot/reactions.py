@@ -136,6 +136,23 @@ def log(events, now=None, limit: int = 6, vols=LOG_VOLS) -> int:
     return len(rows)
 
 
+def find(e, rows=None) -> dict | None:
+    """이 이벤트의 실측 기록. 없으면 None(아직 +4h 가 안 지났거나 대상 밖)."""
+    rows = load_all() if rows is None else rows
+    k = key_of(e)
+    return next((r for r in rows if r.get("key") == k), None)
+
+
+def react_text(e, assets=("나스닥", "코스피"), horizon="1h", rows=None) -> str | None:
+    """'1h 나스닥 +0.31% · 코스피 +0.12%' — 발표 직후 실제로 어떻게 움직였나."""
+    r = find(e, rows)
+    if not r:
+        return None
+    parts = [f"{a} {r['react'][a][horizon]:+.2f}%" for a in assets
+             if (r.get("react") or {}).get(a, {}).get(horizon) is not None]
+    return f"{horizon} " + " · ".join(parts) if parts else None
+
+
 def _mean(v):
     return sum(v) / len(v) if v else None
 
