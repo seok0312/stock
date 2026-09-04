@@ -18,6 +18,10 @@ import notify
 
 KST = timezone(timedelta(hours=9))
 HERE = os.path.dirname(os.path.abspath(__file__))
+# closebet 패키지: 로컬은 저장소 루트(../closebet), 서버는 배포 디렉토리(./closebet)
+for _p in (os.path.abspath(os.path.join(HERE, "..")), HERE):
+    if os.path.isdir(os.path.join(_p, "closebet")) and _p not in sys.path:
+        sys.path.insert(0, _p)
 
 # 한국 정규장 데이터가 아직 전일치인 이른 시간대는 미국 섹터를 근거로 삼는다.
 # 그 이후는 장중 한국 업종·테마로 판단한다(미국장이 닫혀 있으므로).
@@ -127,6 +131,7 @@ def main(argv=None):
             print(f"  뉴스 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
     kr_upjong, kr_themes, kr_when = None, None, None
+    sector_map = {}
     us_leaders = {}
     if not args.no_sectors:
         if slot in US_SECTOR_SLOTS:
@@ -148,8 +153,32 @@ def main(argv=None):
             # 14:30 / 19시 → 미국장이 닫혀 있으므로 장중 한국 데이터로 판단
             try:
                 import kr_sectors as krs
-                kr_upjong = krs.fetch_upjong()
-                kr_themes = krs.fetch_themes()
+                # 전종목 스냅샷 — 테마를 '주도주에 실린 돈'으로 줄 세우는 데 쓴다
+                frame = None
+                try:
+                    from closebet import market as cbm
+                    frame = cbm.get_snapshot("KRX")
+                except Exception:
+                    pass
+                kr_upjong = krs.fetch_upjong_kiwoom() or krs.fetch_upjong()
+                kr_themes = krs.fetch_themes(frame=frame)
+                # 주도 섹터 구성종목 → 섹터 줄에 대표주 2개를 붙인다(섹터→종목 연결).
+                # 같은 매핑을 아래 주도주 태깅에도 재사용한다.
+                if (kr_upjong or {}).get("src") == "kiwoom":
+                    sector_map = krs.sector_members(kr_upjong.get("up") or [])
+                    if frame is not None and sector_map:
+                        inv = {}
+                        for c, nm in sector_map.items():
+                            inv.setdefault(nm, []).append(c)
+                        for x in kr_upjong.get("up") or []:
+                            codes = [c for c in inv.get(x["name"], [])
+                                     if c in frame.index]
+                            if not codes:
+                                continue
+                            sub = frame.loc[codes]
+                            sc = sub["등락률"].clip(lower=0) * sub["거래대금"]
+                            x["leaders"] = sub.loc[sc.sort_values(ascending=False)
+                                                   .head(2).index, "종목명"].tolist()
                 # 정규장(09:00~15:30) 안이면 '장중', 그 뒤면 '종가 기준'
                 kr_when = "장중" if slot in ("0930", "1430") else "종가 기준"
             except Exception as e:
@@ -162,6 +191,12 @@ def main(argv=None):
             ld = ld_mod.fetch_leaders(top=8)
         except Exception as e:
             print(f"  주도주 수집 실패(계속 진행): {type(e).__name__}: {e}")
+        # 주도 섹터 구성종목으로 주도주에 소속 섹터를 태깅 — 섹터→종목 내러티브 연결
+        if ld and sector_map:
+            for r in ld.get("rows") or []:
+                sec = sector_map.get(str(r.get("종목코드", "")))
+                if sec:
+                    r["섹터"] = sec
 
     ev_ctx, evs = None, []
     if not args.no_events:

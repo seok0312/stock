@@ -44,10 +44,10 @@ DISPLAY = [
     {"name": "비트코인", "src": "perp", "sym": "BTC/USDT:USDT", "dp": 0},
 ]
 
-# 변동폭 기준시점(앵커).
-#   09:00  정규장 개장 — 장중 알림은 개장 대비
-#   15:30  정규장 마감 — 장외·밤 알림은 마감 대비
-ANCHORS = ((9, 0), (15, 30))
+# 변동폭 기준시점(앵커) — 15:30(정규장 마감) 단일.
+# 모든 알림이 '직전 거래일 마감 대비'라는 한 가지 기준으로 통일된다.
+# 장중 알림의 코스피·코스닥은 전일 15:30 종가 대비 = 흔히 보는 당일 등락률과 같다.
+ANCHORS = ((15, 30),)
 
 # 알람 슬롯: 키 = 발송시각(HHMM), at = (시, 분)
 SLOTS = {
@@ -139,11 +139,15 @@ def window_bounds(slot: str, now=None):
     return end - timedelta(hours=12), end
 
 
-def in_krx_session(start: datetime, end: datetime) -> bool:
-    """창 전체가 같은 날 정규장(09:00~15:30) 안인가 → 실제 지수를 쓸 수 있다."""
-    return (start.date() == end.date()
-            and start.timetz().replace(tzinfo=None) >= dtime(9, 0)
-            and end.timetz().replace(tzinfo=None) <= dtime(15, 30))
+def index_available(end: datetime) -> bool:
+    """창의 끝이 '오늘 정규장 시간(09:00~15:30)' 안인가.
+
+    앵커가 15:30 단일이라 창 시작은 항상 직전 거래일 마감이다. 그 시작점의
+    지수값 = 전일 종가이므로, 끝이 오늘 장중이면 '지수 전일比'가 곧 창 변동이 된다.
+    끝이 장외면 지수는 멈춰 있으므로 퍼페추얼 프록시를 쓴다.
+    """
+    return (end.date() == datetime.now(KST).date()
+            and dtime(9, 0) <= end.timetz().replace(tzinfo=None) <= dtime(15, 30))
 
 
 def _close_at(symbol: str, ts: datetime, ex=None):
@@ -180,18 +184,16 @@ def _row_perp(spec, start, end, ex):
 
 
 def _row_kr(spec, start, end, ex):
-    """장중 창이면 실제 지수(시가→현재), 아니면 퍼페추얼 프록시. 프록시 없으면 None.
+    """끝이 오늘 장중이면 실제 지수(전일比), 아니면 퍼페추얼 프록시. 프록시 없으면 None.
 
-    폴링 API 는 '오늘' 시가·현재가만 주므로, 과거 창을 수동 재실행할 때
-    어제 창에 오늘 지수가 붙지 않도록 당일 창에만 지수를 쓴다.
+    폴링 API 는 당일 값만 주므로 과거 창을 수동 재실행할 때는 지수를 쓰지 않는다.
     """
-    if in_krx_session(start, end) and end.date() == datetime.now(KST).date():
+    if index_available(end):
         d = _poll_index(spec["index"])
         if d:
-            o, c = _num(d.get("openPrice")), _num(d.get("closePrice"))
-            if o and c:
-                return {"end_px": c, "chg_pct": (c / o - 1) * 100,
-                        "decimals": spec["dp"]}
+            c, ratio = _num(d.get("closePrice")), _num(d.get("fluctuationsRatio"))
+            if c is not None and ratio is not None:
+                return {"end_px": c, "chg_pct": ratio, "decimals": spec["dp"]}
     if not spec.get("sym"):
         return None                       # 코스닥은 장외 프록시가 없다 — 행 생략
     r = _row_perp(spec, start, end, ex)

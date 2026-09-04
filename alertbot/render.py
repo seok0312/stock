@@ -120,13 +120,16 @@ def section_kr_sectors(upjong, themes, when="장중"):
             mark = "🔼" if x["change_pct"] > 0 else "🔽"
             d3 = (f" <i>(3일 {x['d3_pct']:+.2f}%)</i>"
                   if x.get("d3_pct") is not None else "")
-            lines.append(f"  {mark} <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%{d3}")
+            amt = x.get("amt_eok")
+            amt_s = ("" if not amt else
+                     f" · {amt/1e4:.1f}조" if amt >= 10000 else f" · {amt:,.0f}억")
+            lines.append(f"  {mark} <b>{esc(x['name'])}</b> {x['change_pct']:+.2f}%{amt_s}{d3}")
             if with_leaders and x.get("leaders"):
                 lines.append(f"      {esc(', '.join(x['leaders']))}")
 
     if upjong:
-        block(f"🇰🇷 <b>한국 업종</b> <i>({esc(when)})</i>",
-              upjong.get("up") or [], upjong.get("down") or [])
+        block(f"🇰🇷 <b>주도 섹터</b> <i>({esc(when)})</i>",
+              upjong.get("up") or [], upjong.get("down") or [], with_leaders=True)
     if themes:
         block("🎯 <b>주도 테마</b>", themes.get("up") or [],
               themes.get("down") or [], with_leaders=True)
@@ -191,7 +194,7 @@ def section_events_ahead(ev):
     return "\n".join(lines)
 
 
-def section_leaders(ld, title="🎯 <b>당일 주도주 후보</b>"):
+def section_leaders(ld, title="🎯 <b>주도주</b>"):
     """leaders.fetch_leaders() 결과."""
     if not ld or not ld.get("rows"):
         return ""
@@ -201,6 +204,8 @@ def section_leaders(ld, title="🎯 <b>당일 주도주 후보</b>"):
         seg = f"  · <b>{esc(r['종목명'])}</b>({r.get('종목코드','')}) {r.get('등락률',0):+.2f}%"
         if amt is not None:
             seg += f" · {amt:,.0f}억"
+        if r.get("섹터"):
+            seg += f" · <i>{esc(r['섹터'])}</i>"
         lines.append(seg)
         sub = []
         for k, lab in (("외국인", "외국인"), ("기관", "기관")):
@@ -250,27 +255,6 @@ def _flow_table(groups):
            "-" * sum(w)]
     out += ["".join(_pad(c, w[i], "c") for i, c in enumerate(r)) for r in rows]
     return "<pre>" + esc("\n".join(out)) + "</pre>", unit
-
-
-def _exchange_rows(market: dict):
-    """거래소별 순매수 표 입력. [(열이름, {항목: 억원})] 또는 None.
-
-    같은 날 KRX 와 NXT 의 방향이 반대인 경우가 있어(2026-09-03 코스피 외국인:
-    정규장 -4,232억 / NXT +2,411억) 어느 장에서 체결할지 판단에 쓴다.
-    선물은 NXT 에서 거래되지 않으므로 이 표는 코스피 현물만 본다.
-    """
-    by = market.get("by_exchange") or {}
-    if not by:
-        return None
-    out = []
-    for name, label in (("KRX", "정규장"), ("NXT", "NXT")):
-        e = by.get(name) or {}
-        f = dict(e.get("flow") or {})
-        if not f:
-            return None
-        f["비차익"] = (e.get("program") or {}).get("비차익")
-        out.append((label, f))
-    return out
 
 
 def _heat(p):
@@ -367,13 +351,6 @@ def section_flows(fl, cmp=None):
                          f" <i>· 코스피+선물 {cmp.get('n_long', 0)}일 기준</i>")
         lines.append("  · <i>개인+외국인+기관+기타법인 = 0</i>")
 
-        ex = _exchange_rows(rows.get("코스피") or {})
-        if ex:
-            tbl2, unit2 = _flow_table(ex)
-            lines.append(f"\n🏛 <b>거래소별</b> <i>(코스피 현물, {esc(unit2)})</i>")
-            lines.append(tbl2)
-            lines.append("  · <i>정규장=KRX 09:00~15:30 · NXT=08:00~08:50, "
-                         "09:00~15:20, 15:40~20:00</i>")
     return "\n".join(lines)
 
 
