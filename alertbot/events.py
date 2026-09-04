@@ -229,6 +229,84 @@ def _us_earnings(start: datetime, end: datetime) -> list:
     return out
 
 
+IPO_URL = "http://www.38.co.kr/html/fund/index.htm?o=nw"
+
+
+@provider("kr_ipo")
+def _kr_ipo(start: datetime, end: datetime) -> list:
+    """국내 신규상장 일정 — 38커뮤니케이션 신규상장 표.
+
+    상장일·공모가·공모가대비 등락률을 한 페이지에서 준다. 스팩은 뺀다
+    (공모가 2,000원 고정의 페이퍼컴퍼니라 종가베팅 재료가 아니다).
+    상장 완료 건은 네이버에서 현재가를 찾아 공모가 대비 몇 % 인지 계산한다.
+    """
+    try:
+        r = requests.get(IPO_URL, headers={"User-Agent": UA["User-Agent"]}, timeout=15)
+        r.encoding = "euc-kr"
+        html = r.text
+    except Exception:
+        return []
+    now = datetime.now(KST)
+    out = []
+    for tr in re.split(r"<tr", html):
+        cells = [re.sub(r"&nbsp;?|\s+", " ", re.sub(r"<[^>]+>", "", c)).strip()
+                 for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)]
+        if len(cells) < 9 or not re.match(r"20\d\d/\d\d/\d\d", cells[1] or ""):
+            continue
+        name = cells[0]
+        if "스팩" in name:
+            continue
+        try:
+            when = datetime.strptime(cells[1], "%Y/%m/%d").replace(hour=9, tzinfo=KST)
+        except ValueError:
+            continue
+        if not (start <= when <= end):
+            continue
+        po = _num(cells[4].replace(",", ""))
+        e = {"when": when, "country": "KR", "name": f"{name} 신규상장",
+             "name_kr": f"{name} 신규상장", "actual": None, "consensus": None,
+             "previous": None, "unit": None, "vol": "HIGH", "dev": None,
+             "better": None, "speech": False, "tags": set(), "src": "kr_ipo",
+             "note": f"공모가 {po:,.0f}원" if po else None}
+        if when <= now and po:
+            pct, cur, base = _ipo_live_pct(name, po)
+            if pct is None:            # 폴백: 38의 공모가대비, 그마저 없으면 시초/공모
+                pct = _num((cells[5] or "").replace("%", ""))
+                base = "공모가"
+                if pct is None:
+                    pct = _num((cells[7] or "").replace("%", ""))
+                    base = "시초가/공모가"
+            if pct is not None:
+                e["actual"] = pct
+                e["verdict_str"] = f"{base} 대비 {pct:+.1f}%"
+                e["nums_str"] = (f"공모가 {po:,.0f}원 → 현재 {cur:,.0f}원"
+                                 if cur else f"공모가 {po:,.0f}원")
+                e["note"] = None
+        out.append(e)
+    return out
+
+
+def _ipo_live_pct(name: str, po: float):
+    """네이버에서 종목코드를 찾아 현재가/공모가 등락률. 실패 시 (None, None, None)."""
+    try:
+        j = requests.get("https://ac.stock.naver.com/ac",
+                         params={"q": name, "target": "stock"},
+                         headers={"User-Agent": UA["User-Agent"]}, timeout=10).json()
+        item = next((x for x in j.get("items") or []
+                     if x.get("name") == name and x.get("nationCode") == "KOR"), None)
+        if not item:
+            return None, None, None
+        b = requests.get(f"https://m.stock.naver.com/api/stock/{item['code']}/basic",
+                         headers={"User-Agent": UA["User-Agent"],
+                                  "Referer": "https://m.stock.naver.com/"}, timeout=10).json()
+        cur = _num(str(b.get("closePrice") or "").replace(",", ""))
+        if not cur or not po:
+            return None, None, None
+        return (cur / po - 1) * 100, cur, "공모가"
+    except Exception:
+        return None, None, None
+
+
 @provider("kr_expiry")
 def _kr_expiry(start: datetime, end: datetime) -> list:
     """코스피200 선물·옵션 만기일 — 외부 소스 없이 규칙으로 계산한다.
@@ -339,6 +417,8 @@ def label(e) -> str:
 
 def verdict_text(e) -> str:
     """'하회(서프라이즈)' 처럼 예상 대비 판정만. 판정할 수 없으면 빈 문자열."""
+    if e.get("verdict_str"):               # 신규상장처럼 자체 판정문을 가진 이벤트
+        return e["verdict_str"]
     if e.get("dev") is None or e.get("actual") is None:
         return ""
     v = "상회" if e["dev"] > 0 else ("하회" if e["dev"] < 0 else "부합")
@@ -347,6 +427,8 @@ def verdict_text(e) -> str:
 
 def numbers_text(e) -> str:
     """'실제 38 / 예상 47' — 수치만. 제목 줄이 길어지지 않게 분리해 쓴다."""
+    if "nums_str" in e:                    # 자체 수치문(예: 공모가 → 현재가)
+        return e.get("nums_str") or ""
     u = e.get("unit") or ""
     fmt = lambda v: f"{v:g}{u}" if v is not None else None
     a, c = fmt(e.get("actual")), fmt(e.get("consensus"))
@@ -474,8 +556,8 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
             continue
         if e.get("country") not in ("US", "KR", "CN"):   # 코스피에 직접 닿는 곳만
             continue
-        if e.get("src") == "us_earnings":
-            if e["when"] > earn_end or n_earn >= 2:
+        if e.get("src") in ("us_earnings", "kr_ipo"):
+            if e["when"] > earn_end or n_earn >= 3:
                 continue
             n_earn += 1
         elif e["when"] > ind_end:

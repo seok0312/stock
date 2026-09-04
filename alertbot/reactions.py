@@ -114,6 +114,7 @@ def log(events, now=None, limit: int = 6, vols=LOG_VOLS) -> int:
     ready = max(HORIZONS)
     todo = [e for e in events
             if e.get("actual") is not None
+            and e.get("src") not in ("kr_ipo", "kr_expiry", "custom")
             and (not vols or e.get("vol") in vols)
             and e["when"] + timedelta(hours=ready) <= now
             and key_of(e) not in seen]
