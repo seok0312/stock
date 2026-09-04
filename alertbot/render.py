@@ -60,12 +60,12 @@ def section_quotes(win):
             continue
         star = " ★" if r["significant"] else ""
         sign = "🔼" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
-        post = ""
-        if r.get("chg_post") is not None:
-            post = f" <i>(마감후 {r['chg_post']:+.2f}%)</i>"
-        lines.append(f"  {sign} <b>{esc(r['name'])}</b> "
-                     f"{_fmt_px(r['end_px'], r['decimals'])}"
-                     f"  <b>{r['chg_pct']:+.2f}%</b>{star}{post}")
+        px = _fmt_px(r['end_px'], r['decimals'])
+        if r.get("kind") == "yield":
+            px += "%"                     # 금리는 수치 자체가 %
+        tag = f" <i>({esc(r['proxy'])})</i>" if r.get("proxy") else ""
+        lines.append(f"  {sign} <b>{esc(r['name'])}</b> {px}"
+                     f"  <b>{esc(r.get('chg_label') or '')}</b>{star}{tag}")
     return "\n".join(lines)
 
 
@@ -80,7 +80,7 @@ def section_quote_news(win, news):
         items = news.get(r["name"]) or []
         if not items:
             continue
-        lines.append(f"  · <b>{esc(r['name'])}</b> <i>{r['chg_pct']:+.2f}%</i>")
+        lines.append(f"  · <b>{esc(r['name'])}</b> <i>{esc(r.get('chg_label') or '')}</i>")
         for it in items[:2]:
             lines.append(f"      {_link(it)}")
     return "\n".join(lines) if len(lines) > 1 else ""
