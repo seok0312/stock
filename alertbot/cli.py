@@ -25,7 +25,7 @@ for _p in (os.path.abspath(os.path.join(HERE, "..")), HERE):
 
 # 한국 정규장 데이터가 아직 전일치인 이른 시간대는 미국 섹터를 근거로 삼는다.
 # 그 이후는 장중 한국 업종·테마로 판단한다(미국장이 닫혀 있으므로).
-US_SECTOR_SLOTS = {"0600", "0750", "0850"}
+US_SECTOR_SLOTS = {"0600", "0750", "0850", "1800"}   # 1800: 주말엔 금요일 미국장이 유일한 근거
 
 # 주도주는 장중·마감 이후에만 의미가 있다(개장 전엔 전일 데이터).
 LEADER_SLOTS = {"0930", "1430", "1630", "1900", "2000"}
@@ -42,6 +42,7 @@ def pick_slot(now: datetime) -> str:
     """현재 시각에서 이미 지난 슬롯 중 가장 최근 것. 하나도 없으면 마지막(2000)."""
     hm = now.hour * 60 + now.minute
     passed = [(h * 60 + m, k) for k, c in quotes.SLOTS.items()
+              if not c.get("manual")
               for h, m in (c["at"],) if h * 60 + m <= hm]
     return max(passed)[1] if passed else list(quotes.SLOTS)[-1]
 
