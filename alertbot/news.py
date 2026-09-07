@@ -25,6 +25,8 @@ QUERY = {
     "나스닥":   "나스닥 지수 OR 뉴욕증시",
     "코스피":   "코스피 OR 한국증시 외국인",
     "코스닥":   "코스닥 OR 코스닥 급등",
+    "SK하이닉스": "SK하이닉스",
+    "삼성전자": "삼성전자 주가",
     "미국10Y":  "미국 국채금리 OR 미국채 10년물",
     "비트코인": "비트코인 시세",
 }
@@ -118,7 +120,7 @@ def news_for_window(win, limit: int = 2):
     floor = datetime.now(KST) - timedelta(hours=24)
     start = max(win["start"], floor)
     out = {}
-    for r in win["rows"]:
+    for r in list(win["rows"]) + list(win.get("key_stocks") or []):
         if not r["significant"]:
             continue
         items = fetch_news(r["name"], limit=limit,

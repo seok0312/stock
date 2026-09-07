@@ -44,6 +44,15 @@ DISPLAY = [
     {"name": "비트코인", "src": "perp", "sym": "BTC/USDT:USDT", "dp": 0},
 ]
 
+# 주요 종목 — 시황 다음 카테고리. 장중엔 실제 주가(전일比), 장외엔 바이낸스 퍼프
+# (SKHYNIX $696M/24h, SAMSUNG $116M/24h 실측 — 밤사이 미국장 반응이 여기 찍힌다).
+KEY_STOCKS = [
+    {"name": "SK하이닉스", "sym": "SKHYNIX/USDT:USDT", "code": "000660"},
+    {"name": "삼성전자",   "sym": "SAMSUNG/USDT:USDT", "code": "005930"},
+]
+STOCK_SIG_PCT = 1.5        # 개별주는 지수보다 잘 움직여 유의미 기준을 올린다
+STOCK_API = "https://m.stock.naver.com/api/stock/{code}/basic"
+
 # 변동폭 기준시점(앵커) — 15:30(정규장 마감) 단일.
 # 모든 알림이 '직전 거래일 마감 대비'라는 한 가지 기준으로 통일된다.
 # 장중 알림의 코스피·코스닥은 전일 15:30 종가 대비 = 흔히 보는 당일 등락률과 같다.
@@ -214,6 +223,38 @@ def _row_kr(spec, start, end, ex):
     return r
 
 
+def _poll_stock(code: str) -> dict | None:
+    try:
+        r = requests.get(STOCK_API.format(code=code), headers=UA, timeout=12)
+        return r.json() if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def _key_stock_rows(start, end, ex) -> list:
+    """주요 종목 행. 코스피 하이브리드와 같은 규칙 — 장중엔 실제 주가, 장외엔 퍼프."""
+    out = []
+    use_index = index_available(start, end)
+    for spec in KEY_STOCKS:
+        row = None
+        if use_index:
+            b = _poll_stock(spec["code"]) or {}
+            c = _num(str(b.get("closePrice") or "").replace(",", ""))
+            ratio = _num(b.get("fluctuationsRatio"))
+            if c is not None and ratio is not None:
+                row = {"end_px": c, "chg_pct": ratio, "decimals": 0}
+        if row is None:
+            row = _row_perp({"sym": spec["sym"], "dp": 1}, start, end, ex)
+            row["proxy"] = "perp"
+        row["name"] = spec["name"]
+        c = row.get("chg_pct")
+        row["chg_label"] = f"{c:+.2f}%" if c is not None else None
+        row["significant"] = (c is not None and abs(c) >= STOCK_SIG_PCT)
+        out.append(row)
+        time.sleep(0.05)
+    return out
+
+
 def _row_bond(spec):
     """금리는 창 기준이 아니라 전일比 — 임의 과거 시점의 금리를 주는 무료 소스가 없다."""
     try:
@@ -258,7 +299,7 @@ def fetch_window(slot: str, now: datetime | None = None):
         out.append(row)
         time.sleep(0.05)
     return {"slot": slot, "label": SLOTS[slot]["label"], "start": start, "end": end,
-            "rows": out}
+            "rows": out, "key_stocks": _key_stock_rows(start, end, ex)}
 
 
 if __name__ == "__main__":

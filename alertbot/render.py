@@ -69,6 +69,28 @@ def section_quotes(win):
     return "\n".join(lines)
 
 
+def section_key_stocks(win):
+    """주요 종목(SK하이닉스·삼성전자) — 시황 바로 다음.
+
+    장중엔 실제 주가(전일比), 장외엔 바이낸스 퍼프로 밤사이 변동을 잰다(perp 표기).
+    """
+    rows = win.get("key_stocks") or []
+    if not rows:
+        return ""
+    lines = ["\n📌 <b>주요 종목</b>"]
+    for r in rows:
+        if r.get("chg_pct") is None:
+            lines.append(f"  {esc(r['name'])} — 데이터 없음")
+            continue
+        star = " ★" if r["significant"] else ""
+        sign = "🔼" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
+        tag = " <i>(perp)</i>" if r.get("proxy") else ""
+        lines.append(f"  {sign} <b>{esc(r['name'])}</b> "
+                     f"{_fmt_px(r['end_px'], r.get('decimals', 0))}"
+                     f"  <b>{esc(r.get('chg_label') or '')}</b>{star}{tag}")
+    return "\n".join(lines)
+
+
 def section_quote_news(win, news):
     """유의미 변동 자산의 원인 뉴스 — 시황 바로 아래 독립 카테고리.
 
@@ -76,7 +98,7 @@ def section_quote_news(win, news):
     """
     news = news or {}
     lines = ["\n📰 <b>관련 뉴스</b>"]
-    for r in win["rows"]:
+    for r in list(win["rows"]) + list(win.get("key_stocks") or []):
         items = news.get(r["name"]) or []
         if not items:
             continue
@@ -95,7 +117,10 @@ def section_us_sectors(sectors, leaders=None):
     if not up and not dn:
         return ""
     leaders = leaders or {}
-    lines = ["\n🇺🇸 <b>전일 미국 섹터</b>"]
+    proxy = bool(sectors and sectors[0].get("kind") == "perp_proxy")
+    title = ("\n🇺🇸 <b>미국 프록시</b> <i>(휴장일 · 퍼페추얼 기준)</i>" if proxy
+             else "\n🇺🇸 <b>전일 미국 섹터</b>")
+    lines = [title]
     for s in up:
         nm = s["sector"]
         lines.append(f"  🔼 <b>{esc(nm)}</b> {s['change_pct']:+.2f}%")
@@ -313,7 +338,9 @@ def section_flows(fl, cmp=None):
     per_slot = cmp.get("amount_market") or {}
     per_day = fl.get("ref_market") or {}
 
-    lines = ["\n💰 <b>시장 거래대금</b>"]
+    asof = fl.get("asof_label")
+    asof_tag = f" <i>({esc(asof)})</i>" if asof else ""
+    lines = ["\n💰 <b>시장 거래대금</b>" + asof_tag]
     n_amt = 0
     for lab in MARKET_ORDER:
         m = rows.get(lab)
@@ -365,7 +392,8 @@ def section_flows(fl, cmp=None):
     if any(g[1] for g in groups):
         fsrc = "키움 KRX+NXT" if fl.get("flow_src") == "kiwoom" else "네이버 KRX"
         tbl, unit = _flow_table(groups)
-        lines.append(f"\n💵 <b>순매수</b> <i>({esc(unit)} · {esc(fsrc)})</i>")
+        asof2 = f" · {esc(asof)}" if asof else ""
+        lines.append(f"\n💵 <b>순매수</b> <i>({esc(unit)} · {esc(fsrc)}{asof2})</i>")
         lines.append(tbl)
 
         note = []
@@ -391,6 +419,7 @@ def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
     parts = [header(win)]
     for s in (section_events_done(events),        # 오늘 나온 근거를 먼저
               section_quotes(win),
+              section_key_stocks(win),
               section_quote_news(win, news),
               section_flows(flows, flows_cmp),
               section_kr_sectors(kr_upjong, kr_themes, kr_when or "장중"),

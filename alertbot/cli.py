@@ -111,12 +111,15 @@ def main(argv=None):
             fl = flows_mod.summary()
         except Exception as e:
             print(f"  거래대금 수집 실패(계속 진행): {type(e).__name__}: {e}")
-        # 개장 전(오늘 거래 없음)엔 표시할 것도 저장할 것도 없다 — 날짜 혼합 방지.
-        fresh = bool(fl) and any((m.get("flow_eok") or m.get("amount_won"))
-                                 for m in fl.get("rows", []) if not m.get("error"))
-        if fl and not fresh:
-            print("  개장 전 — 오늘 거래 데이터 없음(거래대금·순매수 생략)")
-        if fl and fresh:
+        # 전일 확정치는 표시만 하고(개장 전 슬롯), 비교·저장은 오늘 데이터일 때만.
+        has_data = bool(fl) and any((m.get("flow_eok") or m.get("amount_won"))
+                                    for m in fl.get("rows", []) if not m.get("error"))
+        asof_today = bool(fl) and fl.get("flow_asof") == now.strftime("%Y%m%d")
+        if fl and not has_data:
+            print("  거래 데이터 없음(거래대금·순매수 생략)")
+        elif fl and not asof_today:
+            print(f"  전일 확정 수급 표시({fl.get('asof_label')}) — 비교·저장 생략")
+        if fl and has_data and asof_today:
             try:
                 import store
                 # 같은 시각 과거와 비교 → 저장은 비교 뒤에(오늘 값이 표본에 섞이지 않게)
@@ -147,8 +150,17 @@ def main(argv=None):
             # 미국장이 막 끝났고 한국 데이터는 아직 전일치 → 미국 섹터가 근거
             try:
                 import sectors as sec_mod
-                us_sectors = sec_mod.fetch_us_sectors()
-                kr_impact = sec_mod.kr_impact(us_sectors, win["rows"])
+                from events import _nyse_holiday
+                hol = _nyse_holiday((now - timedelta(days=1)).date())
+                if hol:
+                    # 미국 휴장 다음날 — finviz 는 이틀 전 데이터라 퍼프 프록시로 폴백.
+                    # 휴장일 퍼프 진폭은 평일의 40~60% 라 임계값을 절반으로 낮춘다.
+                    print(f"  미국 휴장({hol}) — 퍼프 프록시 섹터로 폴백")
+                    us_sectors = sec_mod.perp_sectors(win["start"], win["end"])
+                    kr_impact = sec_mod.kr_impact(us_sectors, win["rows"], min_chg=0.5)
+                else:
+                    us_sectors = sec_mod.fetch_us_sectors()
+                    kr_impact = sec_mod.kr_impact(us_sectors, win["rows"])
                 # 예측을 기록해 저녁(18:40)에 실제 등락과 대조 — 적중률을 쌓는다
                 try:
                     import predictions
@@ -158,7 +170,7 @@ def main(argv=None):
                 except Exception as e:
                     print(f"  예측 기록 실패(무시): {type(e).__name__}: {e}")
                 # 강세 섹터에만 주도주·원인뉴스 (뉴스 호출 수를 아끼려 상위 3개)
-                perf = sec_mod.fetch_finviz_perf()
+                perf = {} if hol else sec_mod.fetch_finviz_perf()
                 strong = [x["sector"] for x in us_sectors if x["change_pct"] > 0][:3]
                 for nm in strong:
                     ld = sec_mod.sector_leaders(nm, perf)

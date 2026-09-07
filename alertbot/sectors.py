@@ -144,13 +144,51 @@ QUOTE_TO_KR = {
 }
 
 
-def kr_impact(us_sectors, quote_rows, top_n: int = 5):
+# 미국 휴장일 폴백 — 24시간 퍼페추얼로 만든 유사 섹터.
+# 섹터명은 US_TO_KR 키와 일치시켜 kr_impact 가 그대로 소비한다.
+# XLK/XLF 등 섹터ETF 퍼프는 유동성이 없어(일 수백~수만 달러) 개별주 바스켓으로 합성.
+PERP_SECTOR_PROXY = [
+    ("반도체", "SMH",   ["SMH/USDT:USDT"]),
+    ("에너지", "XLE",   ["XLE/USDT:USDT"]),
+    ("기술",   "빅테크", ["AAPL/USDT:USDT", "MSFT/USDT:USDT",
+                        "GOOGL/USDT:USDT", "META/USDT:USDT"]),
+    ("바이오", "XBI",   ["XBI/USDT:USDT"]),
+    ("나스닥100", "QQQ", ["QQQ/USDT:USDT"]),
+    ("S&P500", "SPY",  ["SPY/USDT:USDT"]),
+    ("소형주", "IWM",   ["IWM/USDT:USDT"]),
+]
+
+
+def perp_sectors(start, end):
+    """[{sector, ticker, change_pct, kind:'perp_proxy'}] — 창(start→end) 변동 기준.
+
+    주의: 휴장일 퍼프는 현물 앵커 없는 기대가격이고 진폭이 평일의 40~60% 수준이라
+    kr_impact 호출 시 임계값을 절반으로 낮춰 쓴다(설계 1+2, 2026-09-08).
+    """
+    import quotes
+    ex = quotes.exchange()
+    out = []
+    for name, tick, syms in PERP_SECTOR_PROXY:
+        pcts = []
+        for sym in syms:
+            p0 = quotes._close_at(sym, start, ex)
+            p1 = quotes._close_at(sym, end, ex)
+            if p0 and p1:
+                pcts.append((p1 / p0 - 1) * 100)
+        if pcts:
+            out.append({"sector": name, "ticker": tick,
+                        "change_pct": round(sum(pcts) / len(pcts), 2),
+                        "kind": "perp_proxy"})
+    return sorted(out, key=lambda x: x["change_pct"], reverse=True)
+
+
+def kr_impact(us_sectors, quote_rows, top_n: int = 5, min_chg: float = 1.0):
     """미국 섹터 상위 + 시황 유의미 변동 → 한국 파급 예상 리스트."""
     out, seen = [], set()
 
     # 1) 미국 섹터/테마 상위에서 유도
     for s in us_sectors:
-        if s["change_pct"] < 1.0:      # 1% 미만은 신호로 보지 않음
+        if s["change_pct"] < min_chg:  # 임계 미만은 신호로 보지 않음(휴장일 폴백은 0.5)
             continue
         hit = US_TO_KR.get(s["sector"])
         if not hit or hit[0] in seen:

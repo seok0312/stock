@@ -71,12 +71,11 @@ def fetch_market(code: str) -> dict | None:
     # 네이버가 3분류만 주므로 잔여분 = 기타법인. 키움 폴백일 때만 쓰이는 파생값.
     if all(v is not None for v in flow.values()):
         flow["기타법인"] = -(flow["개인"] + flow["외국인"] + flow["기관"])
-    # 기준일이 오늘이 아니면(개장 전 새벽) 전일 확정값이 그대로 남아 있는 것이다.
-    # 날짜가 다른 값을 오늘 표에 섞으면 안 되므로 통째로 비운다.
-    # 2026-09-08 06:00 실측: 키움(오늘)은 0 리셋, 네이버 선물은 어제 값 → 혼합 표가 됐었다.
-    if stale:
+    # stale(기준일이 전일)이어도 여기서 지우지 않는다 — 개장 전 슬롯은 "전일 확정"을
+    # 보여주기로 했으므로(사용자 결정 09-08), 기준일 통일은 summary()가 담당한다.
+    # 단 전부 0이면 '오늘 자정 리셋 직후, 거래 전' 상태이므로 데이터 없음으로 본다.
+    if flow and all((v or 0) == 0 for v in flow.values()):
         flow = {}
-        amt_won = None
     p = j.get("programTrendInfo") or {}
     return {
         "name": j.get("stockName"), "code": code,
@@ -224,6 +223,23 @@ def summary(short: int = 5, long: int = 20):
     cur["ref"] = ref
     cur["ref_market"] = ref_market
     apply_kiwoom(cur)
+    # 기준일 통일: 표의 모든 값은 flow_asof 하루의 것이어야 한다.
+    # (08:50 처럼 키움은 오늘 NXT, 네이버 선물·거래대금은 아직 전일인 혼합 상태 방지)
+    tgt = cur.get("flow_asof")
+    today = datetime.now(KST).strftime("%Y%m%d")
+    for m in cur.get("rows", []):
+        if m.get("error") or not m.get("bizdate") or not tgt:
+            continue
+        if m["bizdate"] != tgt:
+            m["amount_won"] = None
+            if not m.get("_kiwoom"):
+                m["flow_eok"] = {}
+    if tgt and tgt != today:
+        cur["asof_label"] = f"{tgt[4:6]}-{tgt[6:8]} 마감"
+        cur["total_amount_jo"] = sum((m.get("amount_won") or 0)
+                                     for m in cur["rows"] if not m.get("error")) / JO
+    else:
+        cur["asof_label"] = None
     return cur
 
 
@@ -236,6 +252,45 @@ def summary(short: int = 5, long: int = 20):
 FLOW_SOURCE = "kiwoom"
 
 
+def _prev_trading_date(now=None) -> str | None:
+    """직전 거래일(YYYYMMDD). 네이버 bizdate 는 자정~개장 사이에 오늘로 먼저 넘어가
+    믿을 수 없어(2026-09-08 08:24 실측: 오늘 날짜 + 전부 0), 거래일 캘린더로 직접 센다."""
+    try:
+        import quotes
+    except Exception:
+        return None
+    d = (now or datetime.now(KST)).date() - timedelta(days=1)
+    for _ in range(15):
+        if quotes.is_trading_date(d):
+            return d.strftime("%Y%m%d")
+        d -= timedelta(days=1)
+    return None
+
+
+def _fill_prev_fut(cur: dict, prev: str) -> None:
+    """전일 확정 표시 때 선물 열 보충 — 네이버가 이미 오늘로 넘어가 전일 선물을 못 주면
+    전일 스냅샷(20:00/19:00/16:30 순)에 저장된 값을 쓴다."""
+    row = next((m for m in cur.get("rows", [])
+                if m.get("label") == "선물" and not m.get("error")), None)
+    if row is None or row.get("flow_eok"):
+        if row is not None:
+            row["bizdate"] = prev if row.get("flow_eok") else row.get("bizdate")
+        return
+    try:
+        import store
+        best = None
+        for r in store.load_all():
+            if r.get("date") == prev and (r.get("flow") or {}).get("선물"):
+                if best is None or str(r.get("slot")) > str(best.get("slot")):
+                    best = r
+        if best:
+            row["flow_eok"] = dict(best["flow"]["선물"])
+            row["bizdate"] = prev
+            row["_kiwoom"] = True          # 기준일 통일 필터가 지우지 않도록
+    except Exception:
+        pass
+
+
 def apply_kiwoom(cur: dict) -> str:
     """순매수·프로그램을 키움(KRX+NXT 통합) 값으로 덮어쓴다. 반환: 실제 사용한 소스명.
 
@@ -244,6 +299,8 @@ def apply_kiwoom(cur: dict) -> str:
     키움이 실패하면 네이버 값을 그대로 두고 'naver' 를 반환한다.
     """
     cur["flow_src"] = "naver"
+    today = datetime.now(KST).strftime("%Y%m%d")
+    cur["flow_asof"] = today
     if FLOW_SOURCE != "kiwoom":
         return "naver"
     try:
@@ -251,8 +308,22 @@ def apply_kiwoom(cur: dict) -> str:
         k = kflows.fetch()
     except Exception:
         k = None
+    # 오늘 거래가 아직 없으면(새벽·주말) 전일 확정치로 전환한다 —
+    # 개장 전 알림은 '전일이 어떻게 끝났나'를 보여주기로 했다(2026-09-08 결정).
+    if not (k and any(v.get("flow") for v in k.values())):
+        prev = _prev_trading_date()
+        if prev and prev != today:
+            try:
+                k2 = kflows.fetch(base_dt=prev)
+            except Exception:
+                k2 = None
+            if k2 and any(v.get("flow") for v in k2.values()):
+                k = k2
+                cur["flow_asof"] = prev
     if not k:
         return "naver"
+    if cur.get("flow_asof") != today:
+        _fill_prev_fut(cur, cur["flow_asof"])
     used = False
     for m in cur.get("rows", []):
         d = k.get(m.get("label"))
@@ -260,6 +331,7 @@ def apply_kiwoom(cur: dict) -> str:
             continue
         if d.get("flow"):
             m["flow_eok"] = dict(d["flow"]); used = True
+            m["_kiwoom"] = True
         if d.get("program"):
             m["program_eok"] = dict(d["program"]); used = True
         if d.get("by_exchange"):

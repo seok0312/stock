@@ -135,12 +135,16 @@ def fetch(base_dt: str | None = None) -> dict | None:
 
 
 def _sum_of(by_ex: dict, key: str) -> dict | None:
-    """거래소별 값을 합쳐 통합값을 만든다. 하나라도 실패하면 None(부분합은 오해를 부른다)."""
-    parts = [(e.get(key) or None) for e in by_ex.values()]
-    if any(p is None for p in parts) or not parts:
+    """거래소별 값을 합쳐 통합값을 만든다.
+
+    KRX 개장 전(08:00~09:00 프리마켓)엔 KRX 가 None 이고 NXT 만 있는 게 정상이므로
+    None 쪽은 0으로 보고 살아 있는 쪽만 합산한다. 전부 None 이면 None(오늘 거래 없음).
+    """
+    live = [e.get(key) for e in by_ex.values() if e.get(key)]
+    if not live:
         return None
     acc = {}
-    for p in parts:
+    for p in live:
         for k, v in p.items():
             if v is None:
                 continue
