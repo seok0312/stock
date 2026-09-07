@@ -136,6 +136,32 @@ def section_kr_sectors(upjong, themes, when="장중"):
     return "\n".join(lines)
 
 
+def section_nxt_premarket(pm):
+    """NXT 프리마켓(08:00~08:50) 주도 섹터·주도주 — 08:50 알림 전용.
+
+    09시 개장 전 유일한 실체결 데이터라 개장 방향의 선행 신호로 쓴다.
+    등락률은 전일 종가 대비, 거래대금은 NXT 체결분만이다.
+    """
+    if not pm:
+        return ""
+    lines = [f"\n🌅 <b>NXT 프리마켓</b> <i>(08:00~08:50 · 총 {pm['total_eok']/1e4:,.1f}조)</i>"]
+    if pm.get("sectors"):
+        lines.append("  <b>주도 섹터</b>")
+        for x in pm["sectors"]:
+            mark = "🔼" if x["chg_pct"] > 0 else "🔽"
+            lines.append(f"  {mark} <b>{esc(x['name'])}</b> {x['chg_pct']:+.2f}% · "
+                         f"{x['amt_eok']:,.0f}억")
+            lines.append(f"      {esc(', '.join(l['name'] for l in x['leaders']))}")
+    if pm.get("stocks"):
+        lines.append("  <b>주도주</b> <i>(NXT 거래대금순)</i>")
+        for r in pm["stocks"]:
+            mark = "🔼" if (r["chg_pct"] or 0) > 0 else "🔽"
+            sec = f" · <i>{esc(r['sector'])}</i>" if r.get("sector") else ""
+            lines.append(f"  {mark} <b>{esc(r['name'])}</b> {r['chg_pct']:+.2f}% · "
+                         f"{r['amt_eok']:,.0f}억{sec}")
+    return "\n".join(lines)
+
+
 def section_kr_impact(impacts):
     """impacts: [{kr_sector, driver, tickers, note}] — '원인 → 결과' 순."""
     if not impacts:
@@ -356,7 +382,7 @@ def section_flows(fl, cmp=None):
 
 def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
           flows=None, flows_cmp=None, kr_upjong=None, kr_themes=None, kr_when=None,
-          us_leaders=None, events=None, footer=None):
+          us_leaders=None, events=None, nxt_pm=None, footer=None):
     parts = [header(win)]
     for s in (section_events_done(events),        # 오늘 나온 근거를 먼저
               section_quotes(win),
@@ -364,6 +390,7 @@ def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
               section_flows(flows, flows_cmp),
               section_kr_sectors(kr_upjong, kr_themes, kr_when or "장중"),
               section_leaders(leaders),
+              section_nxt_premarket(nxt_pm),
               section_us_sectors(us_sectors or [], us_leaders),
               section_kr_impact(kr_impact or []),
               section_events_ahead(events),      # 오버나이트 노출은 맨 끝에

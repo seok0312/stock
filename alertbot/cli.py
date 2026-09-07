@@ -25,7 +25,9 @@ for _p in (os.path.abspath(os.path.join(HERE, "..")), HERE):
 
 # 한국 정규장 데이터가 아직 전일치인 이른 시간대는 미국 섹터를 근거로 삼는다.
 # 그 이후는 장중 한국 업종·테마로 판단한다(미국장이 닫혀 있으므로).
-US_SECTOR_SLOTS = {"0600", "0750", "0850", "1800"}   # 1800: 주말엔 금요일 미국장이 유일한 근거
+# 0850 은 미국 섹터 대신 NXT 프리마켓(08:00~08:50) 기반 한국 주도 섹터/주도주를 쓴다
+# — 09시 개장 직전엔 미국(전일) 정보보다 지금 실체결이 있는 프리마켓이 더 근거가 된다.
+US_SECTOR_SLOTS = {"0600", "0750", "1800"}   # 1800: 주말엔 금요일 미국장이 유일한 근거
 
 # 주도주는 장중·마감 이후에만 의미가 있다(개장 전엔 전일 데이터).
 LEADER_SLOTS = {"0930", "1430", "1630", "1900", "2000"}
@@ -133,6 +135,7 @@ def main(argv=None):
 
     kr_upjong, kr_themes, kr_when = None, None, None
     sector_map = {}
+    nxt_pm = None
     us_leaders = {}
     if not args.no_sectors:
         if slot in US_SECTOR_SLOTS:
@@ -141,6 +144,14 @@ def main(argv=None):
                 import sectors as sec_mod
                 us_sectors = sec_mod.fetch_us_sectors()
                 kr_impact = sec_mod.kr_impact(us_sectors, win["rows"])
+                # 예측을 기록해 저녁(18:40)에 실제 등락과 대조 — 적중률을 쌓는다
+                try:
+                    import predictions
+                    n_pred = predictions.record(kr_impact, slot, now)
+                    if n_pred:
+                        print(f"  미국→한국 예측 {n_pred}건 기록")
+                except Exception as e:
+                    print(f"  예측 기록 실패(무시): {type(e).__name__}: {e}")
                 # 강세 섹터에만 주도주·원인뉴스 (뉴스 호출 수를 아끼려 상위 3개)
                 perf = sec_mod.fetch_finviz_perf()
                 strong = [x["sector"] for x in us_sectors if x["change_pct"] > 0][:3]
@@ -150,6 +161,12 @@ def main(argv=None):
                         us_leaders[nm] = ld
             except Exception as e:
                 print(f"  미국섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
+        elif slot == "0850":
+            try:
+                import nxt
+                nxt_pm = nxt.premarket()
+            except Exception as e:
+                print(f"  NXT 프리마켓 수집 실패(계속 진행): {type(e).__name__}: {e}")
         else:
             # 14:30 / 19시 → 미국장이 닫혀 있으므로 장중 한국 데이터로 판단
             try:
@@ -219,7 +236,7 @@ def main(argv=None):
 
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
-                       leaders=ld, us_leaders=us_leaders,
+                       leaders=ld, us_leaders=us_leaders, nxt_pm=nxt_pm,
                        events=ev_ctx,
                        flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집")
