@@ -56,7 +56,9 @@ SLOTS = {
     "0850": {"label": "정규장 개장 전",  "at": (8, 50)},
     "0930": {"label": "정규장 개장 후",  "at": (9, 30)},
     "1430": {"label": "정규장 마감 전",  "at": (14, 30)},
-    "1630": {"label": "마감 집계 후",    "at": (16, 30)},
+    # 1630 은 '오늘 장이 어떻게 마무리됐나'가 목적이라 당일 15:30 앵커를 건너뛰고
+    # 전일 마감부터 잰다(하루 전체). 19:00/20:00 은 당일 15:30 기준(마감 후 변동) 유지.
+    "1630": {"label": "마감 집계 후",    "at": (16, 30), "prev_close": True},
     # 일요일 18:00 주말 중간점검(cron 전용). manual=True 라 auto 판정에는 안 잡힌다 —
     # 평일 18시대에 --slot auto 로 돌려도 1630 이 뽑히던 기존 동작을 바꾸지 않기 위함.
     "1800": {"label": "주말 중간점검",   "at": (18, 0), "manual": True},
@@ -129,8 +131,11 @@ def window_bounds(slot: str, now=None):
     if end > now:
         end -= timedelta(days=1)
 
+    skip_end_day = SLOTS[slot].get("prev_close", False)
     for back in range(0, 15):            # 최장 연휴 대비 15일 역행
         d = (end - timedelta(days=back)).date()
+        if skip_end_day and d == end.date():
+            continue                     # 당일 앵커 생략 → 전일 마감부터
         if not is_trading_date(d):
             continue
         cands = [end.replace(year=d.year, month=d.month, day=d.day,
@@ -142,15 +147,20 @@ def window_bounds(slot: str, now=None):
     return end - timedelta(hours=12), end
 
 
-def index_available(end: datetime) -> bool:
-    """창의 끝이 '오늘 정규장 시간(09:00~15:30)' 안인가.
+def index_available(start: datetime, end: datetime) -> bool:
+    """이 창의 변동을 '지수 전일比'로 대신할 수 있는가.
 
-    앵커가 15:30 단일이라 창 시작은 항상 직전 거래일 마감이다. 그 시작점의
-    지수값 = 전일 종가이므로, 끝이 오늘 장중이면 '지수 전일比'가 곧 창 변동이 된다.
-    끝이 장외면 지수는 멈춰 있으므로 퍼페추얼 프록시를 쓴다.
+    조건: 창 시작이 직전 거래일 마감이고(시작 날짜 < 끝 날짜), 끝이 오늘이며,
+    오늘 지수가 이미 열렸을 것(09:00 이후). 이러면 창 변동 = 지수 당일 등락률이다.
+    - 장중(09:30/14:30): 실시간 등락률 ✓
+    - 마감 후 1630(전일마감→오늘 16:30): 지수는 15:30 에 멈추므로 종가 등락률이
+      곧 창 변동 ✓ — '오늘 장 마무리'라는 슬롯 목적과 일치한다.
+    - 19:00/20:00(당일 15:30→) : 시작·끝이 같은 날 → 지수 전일比는 창과 무관, 프록시.
+    - 새벽·개장 전: 오늘 지수가 아직 없음 → 프록시.
     """
-    return (end.date() == datetime.now(KST).date()
-            and dtime(9, 0) <= end.timetz().replace(tzinfo=None) <= dtime(15, 30))
+    return (start.date() < end.date()
+            and end.date() == datetime.now(KST).date()
+            and end.timetz().replace(tzinfo=None) >= dtime(9, 0))
 
 
 def _close_at(symbol: str, ts: datetime, ex=None):
@@ -191,7 +201,7 @@ def _row_kr(spec, start, end, ex):
 
     폴링 API 는 당일 값만 주므로 과거 창을 수동 재실행할 때는 지수를 쓰지 않는다.
     """
-    if index_available(end):
+    if index_available(start, end):
         d = _poll_index(spec["index"])
         if d:
             c, ratio = _num(d.get("closePrice")), _num(d.get("fluctuationsRatio"))
