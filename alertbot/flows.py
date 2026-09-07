@@ -58,6 +58,8 @@ def fetch_market(code: str) -> dict | None:
         amt_won = v * 1e6 if "백만" in str(raw) else v      # '백만' 단위 표기
 
     d = fetch_trend(code) or (j.get("dealTrendInfo") or {})
+    today = datetime.now(KST).strftime("%Y%m%d")
+    stale = bool(d.get("bizdate")) and d.get("bizdate") != today
     # 순매수 단위는 억원. 2026-09-03 마감 실측으로 확정:
     #   FUT  개인 -3,768 / 외국인 +8,076 / 기관 -3,229  = 키움 0780 선물과 동일
     #   화면의 계약수(-1,450/+3,077/-1,211) x 1,029.15p x 25만원 과도 오차 1~6% 일치
@@ -69,6 +71,12 @@ def fetch_market(code: str) -> dict | None:
     # 네이버가 3분류만 주므로 잔여분 = 기타법인. 키움 폴백일 때만 쓰이는 파생값.
     if all(v is not None for v in flow.values()):
         flow["기타법인"] = -(flow["개인"] + flow["외국인"] + flow["기관"])
+    # 기준일이 오늘이 아니면(개장 전 새벽) 전일 확정값이 그대로 남아 있는 것이다.
+    # 날짜가 다른 값을 오늘 표에 섞으면 안 되므로 통째로 비운다.
+    # 2026-09-08 06:00 실측: 키움(오늘)은 0 리셋, 네이버 선물은 어제 값 → 혼합 표가 됐었다.
+    if stale:
+        flow = {}
+        amt_won = None
     p = j.get("programTrendInfo") or {}
     return {
         "name": j.get("stockName"), "code": code,

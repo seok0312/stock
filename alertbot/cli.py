@@ -111,7 +111,12 @@ def main(argv=None):
             fl = flows_mod.summary()
         except Exception as e:
             print(f"  거래대금 수집 실패(계속 진행): {type(e).__name__}: {e}")
-        if fl:
+        # 개장 전(오늘 거래 없음)엔 표시할 것도 저장할 것도 없다 — 날짜 혼합 방지.
+        fresh = bool(fl) and any((m.get("flow_eok") or m.get("amount_won"))
+                                 for m in fl.get("rows", []) if not m.get("error"))
+        if fl and not fresh:
+            print("  개장 전 — 오늘 거래 데이터 없음(거래대금·순매수 생략)")
+        if fl and fresh:
             try:
                 import store
                 # 같은 시각 과거와 비교 → 저장은 비교 뒤에(오늘 값이 표본에 섞이지 않게)

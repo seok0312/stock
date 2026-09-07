@@ -80,6 +80,8 @@ def _flow(kc, mrkt_tp: str, base_dt: str, stex: str = "3") -> dict | None:
     # 이렇게 해야 개인+외국인+기관+기타법인 = 0 이 정확히 성립한다.
     frgn += _f(r.get("native_trmt_frgnr_netprps")) or 0.0
     orgn += _f(r.get("natn_netprps")) or 0.0
+    if not any((ind, frgn, orgn, etc)):
+        return None        # 개장 전(오늘 거래 없음) — 0 네 개는 데이터 없음으로 본다
     return {"개인": ind, "외국인": frgn, "기관": orgn, "기타법인": etc}
 
 

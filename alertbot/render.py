@@ -314,10 +314,12 @@ def section_flows(fl, cmp=None):
     per_day = fl.get("ref_market") or {}
 
     lines = ["\n💰 <b>시장 거래대금</b>"]
+    n_amt = 0
     for lab in MARKET_ORDER:
         m = rows.get(lab)
-        if not m:
-            continue
+        if not m or m.get("amount_won") is None:
+            continue                      # 개장 전엔 오늘 거래대금이 없다 — 행 생략
+        n_amt += 1
         amt = (m.get("amount_won") or 0) / 1e12
         d = per_slot.get(lab) or per_day.get(lab) or {}
         p = d.get("pct_short")
@@ -328,9 +330,12 @@ def section_flows(fl, cmp=None):
     for m in fl["rows"]:
         if m.get("error"):
             lines.append(f"  · {esc(m['label'])} — 조회 실패")
-    lines.append(f"  ── <b>합계 {(fl.get('total_amount_jo') or 0):,.0f}조</b>")
+    if n_amt == 0:
+        lines = []                        # 거래대금 블록 통째로 생략
+    else:
+        lines.append(f"  ── <b>합계 {(fl.get('total_amount_jo') or 0):,.0f}조</b>")
 
-    a = cmp.get("amount") or fl.get("ref") or {}
+    a = (cmp.get("amount") or fl.get("ref") or {}) if n_amt else {}
     ref_src = "같은 시각" if cmp.get("amount") else "종가"
     for lab, key in (("  5일", "pct_short"), ("20일", "pct_long")):
         p = a.get(key)
