@@ -229,6 +229,104 @@ def _us_earnings(start: datetime, end: datetime) -> list:
     return out
 
 
+@provider("holidays")
+def _holidays(start: datetime, end: datetime) -> list:
+    """한국·미국 증시 휴장일 — 오버나이트 리스크의 가장 확실한 형태.
+
+    한국: holidays 패키지(음력 공휴일 계산) + 근로자의날(5/1) + 연말 휴장(12/31).
+    미국: NYSE 휴장 규칙을 직접 계산 — 고정일은 토→금 / 일→월 관측일 보정.
+    휴장은 발표가 아니라 '없는 날'이므로 발표 완료에는 안 넣고 예정에만 나온다
+    (when 을 그날 개장 시각으로 두면 지나간 순간 done 후보에서 자연히 빠진다).
+    """
+    out = []
+    # ── 한국 (KRX): 개장 시각 09:00 기준
+    try:
+        import holidays as _hol
+        years = sorted({start.year, end.year})
+        kr = dict(_hol.KR(years=years, language="ko"))
+        for y in years:
+            kr.setdefault(_dt_date(y, 5, 1), "근로자의 날")
+            kr.setdefault(_dt_date(y, 12, 31), "연말 휴장")
+        for d, name in sorted(kr.items()):
+            if d.weekday() >= 5:
+                continue
+            when = datetime(d.year, d.month, d.day, 9, 0, tzinfo=KST)
+            if start <= when <= end:
+                out.append(_holiday_event(when, "KR", f"한국 휴장 ({name})"))
+    except Exception:
+        pass
+    # ── 미국 (NYSE): 서머타임 구분 없이 개장을 KST 23:30/22:30 중 22:30 근사로 표기
+    d = start.date()
+    while d <= end.date():
+        name = _nyse_holiday(d)
+        if name:
+            when = datetime(d.year, d.month, d.day, 22, 30, tzinfo=KST)
+            if start <= when <= end:
+                out.append(_holiday_event(when, "US", f"미국 휴장 ({name})"))
+        d += timedelta(days=1)
+    return out
+
+
+def _dt_date(y, m, d):
+    import datetime as _dtm
+    return _dtm.date(y, m, d)
+
+
+def _holiday_event(when, country, name):
+    return {"when": when, "country": country, "name": name, "name_kr": name,
+            "actual": None, "consensus": None, "previous": None, "unit": None,
+            "vol": "HIGH", "dev": None, "better": None, "speech": False,
+            "tags": set(), "src": "holidays", "note": None}
+
+
+def _nyse_holiday(d):
+    """NYSE 휴장이면 이름, 아니면 None. 전부 규칙으로 계산된다."""
+    import datetime as _dtm
+    y = d.year
+
+    def observed(md):
+        x = _dtm.date(y, *md)
+        if x.weekday() == 5:
+            x -= _dtm.timedelta(days=1)
+        elif x.weekday() == 6:
+            x += _dtm.timedelta(days=1)
+        return x
+
+    def nth_weekday(month, weekday, n):
+        x = _dtm.date(y, month, 1)
+        x += _dtm.timedelta(days=(weekday - x.weekday()) % 7)
+        return x + _dtm.timedelta(weeks=n - 1)
+
+    def last_monday(month):
+        import calendar as _cal
+        x = _dtm.date(y, month, _cal.monthrange(y, month)[1])
+        return x - _dtm.timedelta(days=(x.weekday() - 0) % 7)
+
+    def easter():
+        a = y % 19; b, c = divmod(y, 100); dd, e = divmod(b, 4)
+        f = (b + 8) // 25; g = (b - f + 1) // 3
+        h = (19 * a + b - dd - g + 15) % 30
+        i, k = divmod(c, 4)
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        mo, day = divmod(h + l - 7 * m + 114, 31)
+        return _dtm.date(y, mo, day + 1)
+
+    table = {
+        observed((1, 1)): "New Year's Day",
+        nth_weekday(1, 0, 3): "마틴 루터 킹 데이",
+        nth_weekday(2, 0, 3): "대통령의 날",
+        easter() - _dtm.timedelta(days=2): "성금요일",
+        last_monday(5): "메모리얼 데이",
+        observed((6, 19)): "준틴스",
+        observed((7, 4)): "독립기념일",
+        nth_weekday(9, 0, 1): "노동절",
+        nth_weekday(11, 3, 4): "추수감사절",
+        observed((12, 25)): "크리스마스",
+    }
+    return table.get(d)
+
+
 IPO_URL = "http://www.38.co.kr/html/fund/index.htm?o=nw"
 
 
@@ -556,8 +654,8 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
             continue
         if e.get("country") not in ("US", "KR", "CN"):   # 코스피에 직접 닿는 곳만
             continue
-        if e.get("src") in ("us_earnings", "kr_ipo"):
-            if e["when"] > earn_end or n_earn >= 3:
+        if e.get("src") in ("us_earnings", "kr_ipo", "holidays"):
+            if e["when"] > earn_end or n_earn >= 4:
                 continue
             n_earn += 1
         elif e["when"] > ind_end:

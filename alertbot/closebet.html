@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>종가베팅 수급</title>
+<style>
+:root{
+  color-scheme: light;
+  --surface:#fcfcfb; --panel:#ffffff; --border:#e4e3df;
+  --text-1:#0b0b0b; --text-2:#52514e; --text-3:#8a8984;
+  --s-indiv:#2a78d6; --s-frgn:#eb6834; --s-inst:#1baf7a; --s-etc:#eda100;
+  --pos:#e34948; --neg:#2a78d6;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    color-scheme: dark;
+    --surface:#1a1a19; --panel:#222221; --border:#3a3936;
+    --text-1:#ffffff; --text-2:#c3c2b7; --text-3:#8a8984;
+    --s-indiv:#3987e5; --s-frgn:#d95926; --s-inst:#199e70; --s-etc:#c98500;
+    --pos:#e66767; --neg:#3987e5;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--text-1);
+  font:14px/1.5 -apple-system,"Malgun Gothic","Apple SD Gothic Neo",sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:19px;margin:0 0 2px}
+.sub{color:var(--text-3);font-size:12px;margin-bottom:16px}
+h2{font-size:15px;margin:26px 0 10px}
+.datebar{display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 6px}
+.datebar button{border:1px solid var(--border);background:var(--panel);color:var(--text-2);
+  border-radius:8px;padding:5px 11px;font-size:13px;cursor:pointer}
+.datebar button.on{border-color:var(--text-1);color:var(--text-1);font-weight:700}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;
+  padding:14px 16px;margin-bottom:14px}
+.chartbox{position:relative;height:300px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:6px 10px;text-align:right;border-bottom:1px solid var(--border)}
+th:first-child,td:first-child{text-align:left;color:var(--text-2)}
+thead th{color:var(--text-3);font-weight:600;font-size:12px}
+td.pos{color:var(--pos)} td.neg{color:var(--neg)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--text-2);margin:2px 0 8px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.note{color:var(--text-3);font-size:12px;margin-top:6px}
+.qual{color:var(--text-3);font-size:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:760px){.grid2{grid-template-columns:1fr}}
+.overflow{overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>종가베팅 수급 대시보드</h1>
+  <div class="sub" id="gen">불러오는 중…</div>
+
+  <div class="datebar" id="datebar"></div>
+
+  <h2>세션별 순매수 <span class="qual">(억원 · 키움 KRX/NXT 스냅샷 차분)</span></h2>
+  <div class="grid2">
+    <div class="panel overflow"><b style="font-size:13px">코스피</b><table id="sess-kospi"></table><div class="qual" id="qual-kospi"></div></div>
+    <div class="panel overflow"><b style="font-size:13px">코스닥</b><table id="sess-kosdaq"></table><div class="qual" id="qual-kosdaq"></div></div>
+  </div>
+
+  <h2>시간대별 누적 순매수 <span class="qual">(네이버 1.5분 해상도 · KRX 기준)</span></h2>
+  <div class="legend" id="legend"></div>
+  <div class="panel"><b style="font-size:13px">코스피</b><div class="chartbox"><canvas id="ch-kospi"></canvas></div></div>
+  <div class="panel"><b style="font-size:13px">코스닥</b><div class="chartbox"><canvas id="ch-kosdaq"></canvas></div></div>
+  <div class="panel"><b style="font-size:13px">코스피200 선물</b><div class="chartbox"><canvas id="ch-fut"></canvas></div>
+    <div class="note" id="fut-note"></div></div>
+
+  <h2>일자별 마감 수급 <span class="qual">(각 날짜 시계열의 마지막 값 · 억원)</span></h2>
+  <div class="panel overflow"><table id="daily"></table></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+const S = [
+  {key:"개인",   css:"--s-indiv"},
+  {key:"외국인", css:"--s-frgn"},
+  {key:"기관계", css:"--s-inst", alias:"기관"},
+  {key:"기타법인", css:"--s-etc"},
+];
+const cssv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = v => v==null ? "-" :
+  Math.abs(v) >= 10000 ? (v/10000).toFixed(1)+"조" :
+  Math.round(v).toLocaleString()+"억";
+const cls = v => v==null ? "" : v > 0 ? "pos" : v < 0 ? "neg" : "";
+
+let DATA=null, day=null, charts={};
+
+async function boot(){
+  DATA = await (await fetch("closebet_data.json?v="+Date.now())).json();
+  document.getElementById("gen").textContent =
+    "생성 " + DATA.generated.replace("T"," ").slice(0,16) + " · 텔레그램 브리핑의 상세 화면";
+  const days = DATA.days.slice();
+  day = days[days.length-1];
+  const bar = document.getElementById("datebar");
+  days.forEach(d=>{
+    const b=document.createElement("button");
+    b.textContent = d.slice(4,6)+"/"+d.slice(6,8);
+    b.dataset.d=d;
+    b.onclick=()=>{day=d; render();};
+    bar.appendChild(b);
+  });
+  const lg=document.getElementById("legend");
+  lg.innerHTML = S.map(s=>`<span><i style="background:${cssv(s.css)}"></i>${s.alias||s.key}</span>`).join("");
+  render(); renderDaily();
+}
+
+function render(){
+  document.querySelectorAll(".datebar button").forEach(b=>b.classList.toggle("on", b.dataset.d===day));
+  renderSessions("kospi"); renderSessions("kosdaq");
+  renderChart("kospi"); renderChart("kosdaq"); renderChart("fut");
+  const f=(DATA.intraday[day]||{}).fut;
+  document.getElementById("fut-note").textContent =
+    f && f.fut_close ? `${f.note} (종가 ${f.fut_close.toLocaleString()}p)` : "";
+}
+
+function renderSessions(mkt){
+  const el=document.getElementById("sess-"+mkt), q=document.getElementById("qual-"+mkt);
+  const v=((DATA.sessions[day]||{})[mkt]||null);
+  if(!v){ el.innerHTML="<tr><td>세션 데이터 없음</td></tr>"; q.textContent=""; return; }
+  const items=["개인","외국인","기관","기타법인","비차익"];
+  let h="<thead><tr><th>구간</th>"+items.map(i=>`<th>${i}</th>`).join("")+"</tr></thead><tbody>";
+  for(const [k,label] of [["pre","프리 08:00~08:50"],["main","정규장 09:00~15:30"],["after","애프터 15:40~20:00"]]){
+    const s=v.sessions[k];
+    h+=`<tr><td>${label}</td>`+items.map(i=>{
+      const x=s?s[i]:null;
+      return `<td class="${cls(x)}">${fmt(x)}</td>`;
+    }).join("")+"</tr>";
+  }
+  el.innerHTML=h+"</tbody>";
+  q.textContent=(v.quality||[]).map(x=>"⚠ "+x).join(" · ");
+}
+
+function renderChart(mkt){
+  const cvs=document.getElementById("ch-"+mkt);
+  const d=(DATA.intraday[day]||{})[mkt];
+  if(charts[mkt]){ charts[mkt].destroy(); charts[mkt]=null; }
+  if(!d){ return; }
+  const gridC = cssv("--border"), tickC = cssv("--text-3");
+  charts[mkt]=new Chart(cvs,{
+    type:"line",
+    data:{ labels:d.t,
+      datasets:S.map(s=>({
+        label:s.alias||s.key, data:d[s.key],
+        borderColor:cssv(s.css), borderWidth:2,
+        pointRadius:0, pointHoverRadius:5, pointHitRadius:8,
+        spanGaps:true, tension:0.1,
+      }))},
+    options:{
+      responsive:true, maintainAspectRatio:false, animation:false,
+      interaction:{mode:"index", intersect:false},
+      plugins:{
+        legend:{display:false},
+        tooltip:{callbacks:{label:c=>` ${c.dataset.label} ${fmt(c.parsed.y)}`}},
+      },
+      scales:{
+        x:{ticks:{color:tickC, maxTicksLimit:10, maxRotation:0}, grid:{display:false}},
+        y:{ticks:{color:tickC, callback:v=>fmt(v)}, grid:{color:gridC},
+           border:{display:false}},
+      },
+    }});
+}
+
+function renderDaily(){
+  const el=document.getElementById("daily");
+  let h="<thead><tr><th>날짜</th>"+S.map(s=>`<th>코스피 ${s.alias||s.key}</th>`).join("")+
+        "<th>코스닥 외국인</th><th>선물 외국인</th></tr></thead><tbody>";
+  for(const d of DATA.days.slice().reverse()){
+    const last=(m,k)=>{const x=(DATA.intraday[d]||{})[m]; if(!x) return null;
+      const a=x[k]; for(let i=a.length-1;i>=0;i--) if(a[i]!=null) return a[i]; return null;};
+    h+=`<tr><td>${d.slice(4,6)}/${d.slice(6,8)}</td>`+
+      S.map(s=>{const v=last("kospi",s.key);return `<td class="${cls(v)}">${fmt(v)}</td>`;}).join("")+
+      [last("kosdaq","외국인"),last("fut","외국인")].map(v=>`<td class="${cls(v)}">${fmt(v)}</td>`).join("")+
+      "</tr>";
+  }
+  el.innerHTML=h+"</tbody>";
+}
+boot();
+</script>
+</body>
+</html>
