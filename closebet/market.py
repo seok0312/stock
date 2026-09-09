@@ -40,10 +40,15 @@ def get_snapshot(market: str = "KRX") -> pd.DataFrame:
     """전종목 최근 거래일 스냅샷. index=종목코드(6자리 str), 표준 한글 컬럼.
 
     market: "KRX"(전체) / "KOSPI" / "KOSDAQ".
+    FDR(KRX 데이터)이 404 등으로 죽으면 네이버 모바일 시총 리스트 API 로 폴백한다
+    (2026-09-09 KRX 가 FDR 엔드포인트를 막아 주도주가 통째로 빠진 사고 재발 방지).
     """
-    df = fdr.StockListing(market)
+    try:
+        df = fdr.StockListing(market)
+    except Exception:
+        df = None
     if df is None or df.empty:
-        return pd.DataFrame()
+        return _snapshot_naver(market)
 
     df = df.rename(columns=_RENAME)
     df["종목코드"] = df["종목코드"].astype(str).str.zfill(6)
@@ -57,13 +62,85 @@ def get_snapshot(market: str = "KRX") -> pd.DataFrame:
     return df
 
 
+_NAVER_LIST = "https://m.stock.naver.com/api/stocks/marketValue/{mk}"
+_naver_cache: dict = {}          # market -> (epoch, df). 한 슬롯에서 여러 번 불려도 39콜 1회만.
+
+
+def _snapshot_naver(market: str = "KRX") -> pd.DataFrame:
+    """네이버 전종목 리스트 폴백. 시가/고가/저가는 없음(종가·등락률·거래대금·시총만).
+
+    단위 실측: *Raw 필드는 원 단위 그대로 (콤마 표기 필드가 백만원/억원 축약본).
+    pageSize 는 100 초과 시 에러 페이지가 온다.
+    """
+    import time as _t
+
+    import requests
+
+    hit = _naver_cache.get(market)
+    if hit and _t.time() - hit[0] < 300:
+        return hit[1]
+    mks = {"KRX": ["KOSPI", "KOSDAQ"], "KOSPI": ["KOSPI"], "KOSDAQ": ["KOSDAQ"]}[market]
+    hdr = {"User-Agent": "Mozilla/5.0"}
+    rows = []
+    for mk in mks:
+        for page in range(1, 40):
+            try:
+                r = requests.get(_NAVER_LIST.format(mk=mk), headers=hdr, timeout=15,
+                                 params={"page": page, "pageSize": 100}).json()
+            except Exception:
+                break
+            batch = r.get("stocks") or []
+
+            def _fn(v):
+                try:
+                    return float(str(v).replace(",", ""))
+                except (TypeError, ValueError):
+                    return None
+
+            for s in batch:
+                if s.get("stockEndType") != "stock":
+                    continue
+                rows.append({
+                    "종목코드": str(s.get("itemCode") or "").zfill(6),
+                    "종목명": s.get("stockName"),
+                    "시장": mk,
+                    "종가": _fn(s.get("closePriceRaw")),
+                    "등락률": _fn(s.get("fluctuationsRatio")),
+                    "거래량": _fn(s.get("accumulatedTradingVolumeRaw")),
+                    # Raw 필드는 원 단위 그대로다 (콤마 표기 필드만 백만원/억원 축약)
+                    "거래대금": _fn(s.get("accumulatedTradingValueRaw")),
+                    "시가총액": _fn(s.get("marketValueRaw")),
+                })
+            if len(batch) < 100:
+                break
+            _t.sleep(0.15)
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).set_index("종목코드")
+    for c in _NUMERIC:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    _naver_cache[market] = (_t.time(), df)
+    return df
+
+
 def get_price_history(code: str, start=None, end=None) -> pd.DataFrame:
     """개별 종목 과거 일봉(OHLCV). 백테스팅 단계에서 사용."""
     return fdr.DataReader(str(code).zfill(6), start, end)
 
 
 def latest_trading_date() -> str:
-    """최근 거래일(YYYYMMDD). KOSPI 지수 마지막 일자 기준, 실패 시 오늘."""
+    """최근 거래일(YYYYMMDD). 네이버 지수 API 1차(FDR KS11 은 이틀씩 뒤처진 적 있음)."""
+    try:
+        import requests
+        r = requests.get("https://m.stock.naver.com/api/index/KOSPI/price",
+                         params={"pageSize": 1, "page": 1},
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=10).json()
+        d = ((r[0] if isinstance(r, list) else {}).get("localTradedAt") or "")[:10]
+        if len(d) == 10:
+            return d.replace("-", "")
+    except Exception:
+        pass
     try:
         start = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
         ks = fdr.DataReader("KS11", start)

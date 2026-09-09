@@ -35,9 +35,9 @@ INSTRUMENTS = [
 
 # 시황에 표시할 행. src: perp=퍼페추얼 / kr=지수(장중)+프록시(장외) / bond=금리
 DISPLAY = [
+    {"name": "미국10Y",  "src": "bond", "code": "US10YT=RR"},
     {"name": "오일",     "src": "perp", "sym": "CL/USDT:USDT",  "dp": 2},
     {"name": "금",       "src": "perp", "sym": "XAU/USDT:USDT", "dp": 2},
-    {"name": "미국10Y",  "src": "bond", "code": "US10YT=RR"},
     {"name": "나스닥",   "src": "perp", "sym": "QQQ/USDT:USDT", "dp": 2},
     {"name": "코스피",   "src": "kr",   "index": "KOSPI",  "sym": "EWY/USDT:USDT", "dp": 2},
     {"name": "코스닥",   "src": "kr",   "index": "KOSDAQ", "sym": None, "dp": 2},
@@ -290,7 +290,7 @@ def fetch_window(slot: str, now: datetime | None = None):
         row["name"] = spec["name"]
         if row.get("kind") == "yield":
             bp = row.get("chg_bp")
-            row["chg_label"] = f"{bp:+.1f}bp · 전일비" if bp is not None else None
+            row["chg_label"] = f"{bp:+.1f}bp (전일비)" if bp is not None else None
             row["significant"] = (bp is not None and abs(bp) >= SIGNIFICANT_BP)
         else:
             c = row.get("chg_pct")

@@ -17,8 +17,9 @@ def _fmt_px(v, dp):
 
 def header(win):
     e = win["end"]
-    return (f"{ICON[win['slot']]} <b>종가베팅 브리핑</b> · {e:%m-%d}({WD[e.weekday()]}) {e:%H:%M}\n"
-            f"<i>{esc(win['label'])} | {win['start']:%m-%d %H:%M} → {win['end']:%m-%d %H:%M}</i>")
+    return (f"{ICON[win['slot']]} <b>종가베팅 브리핑</b>\n"
+            f"· {e:%m/%d}({WD[e.weekday()]}) {e:%H:%M}\n"
+            f"· <i>{_span(win)} 변동 ({win['start']:%m/%d %H:%M} → {win['end']:%m/%d %H:%M})</i>")
 
 
 def _span(win):
@@ -53,7 +54,7 @@ def _pad(s: str, width: int, align: str = "l") -> str:
 
 def section_quotes(win):
     """시황 5종을 순서대로. 뉴스는 바로 아래 별도 섹션으로 뺀다."""
-    lines = [f"\n📊 <b>시황</b> <i>({_span(win)} 변동)</i>"]
+    lines = ["\n📊 <b>시황</b>"]
     for r in win["rows"]:
         if r["chg_pct"] is None:
             lines.append(f"  {esc(r['name'])} — 데이터 없음")
@@ -298,19 +299,19 @@ def _flow_table(groups):
         left = gap // 2
         return "　" * left + s + "　" * (gap - left)
 
-    titles = [lab("구분")] + [g[0] for g in groups]
-    rows = [[lab(k)] + [("-" if (acc or {}).get(k) is None else fmt(acc[k]))
-                        for _, acc in groups] for k in KEYS]
-    w = [max(_dw(r[i]) for r in [titles] + rows) + 2 for i in range(len(titles))]
-    out = ["".join(_pad(t, w[i], "c") for i, t in enumerate(titles)),
-           "-" * sum(w)]
-    out += ["".join(_pad(c, w[i], "c") for i, c in enumerate(r)) for r in rows]
+    # 플랫폼별 폰트에서 한글:반각 폭 비율이 제각각이라(특히 PC 텔레그램),
+    # 한 줄 안에서 한글과 반각 공백을 섞어 패딩하면 기기마다 열이 어긋난다.
+    # 원칙: 라벨 블록은 전각(한글+U+3000)으로만, 숫자 블록은 반각(ASCII)으로만
+    # 채운다 → 데이터 행끼리는 어떤 폰트에서도 정렬 유지. 헤더/구분선만
+    # 한글 제목이라 근사 정렬(폭 추정 2:1)로 둔다.
+    cells = [[("-" if (acc or {}).get(k) is None else fmt(acc[k]))
+              for _, acc in groups] for k in KEYS]
+    wn = [max(len(r[i]) for r in cells) + 3 for i in range(len(groups))]
+    head = lab("구분") + "".join(_pad(g[0], wn[i], "c") for i, g in enumerate(groups))
+    out = [head, "-" * (8 + sum(wn))]
+    out += [lab(k) + "".join(c.rjust(wn[i]) for i, c in enumerate(r))
+            for k, r in zip(KEYS, cells)]
     return "<pre>" + esc("\n".join(out)) + "</pre>", unit
-
-
-def _heat(p):
-    return "🔥 과열" if p > 30 else ("🌿 활발" if p > 5 else
-           ("💤 한산" if p < -20 else "▫️ 보통"))
 
 
 # 거래대금 표시 순서 — 선물이 규모가 가장 크고 방향을 먼저 보여주므로 앞에 둔다
@@ -338,6 +339,12 @@ def section_flows(fl, cmp=None):
     per_slot = cmp.get("amount_market") or {}
     per_day = fl.get("ref_market") or {}
 
+    def _pct_tag(d):
+        """(5일 +14% / 20일 +37%) — 같은 시각평균 대비, 있는 것만."""
+        parts = [f"{nm} {d[k]:+.0f}%" for nm, k in (("5일", "pct_short"), ("20일", "pct_long"))
+                 if d.get(k) is not None]
+        return f" <i>({' / '.join(parts)})</i>" if parts else ""
+
     asof = fl.get("asof_label")
     asof_tag = f" <i>({esc(asof)})</i>" if asof else ""
     lines = ["\n💰 <b>시장 거래대금</b>" + asof_tag]
@@ -349,25 +356,16 @@ def section_flows(fl, cmp=None):
         n_amt += 1
         amt = (m.get("amount_won") or 0) / 1e12
         d = per_slot.get(lab) or per_day.get(lab) or {}
-        p = d.get("pct_short")
-        tag = ""
-        if p is not None:
-            tag = f" <i>(5일 {'🔼' if p > 0 else '🔽'}{abs(p):.0f}%)</i>"
-        lines.append(f"  · <b>{esc(lab)}</b> {amt:,.0f}조{tag}")
+        pad = "　" * (3 - len(lab))   # 선물(2자)도 코스피/코스닥과 금액 열 맞춤
+        lines.append(f"  · <b>{esc(lab)}</b>{pad} {amt:,.0f}조{_pct_tag(d)}")
     for m in fl["rows"]:
         if m.get("error"):
             lines.append(f"  · {esc(m['label'])} — 조회 실패")
     if n_amt == 0:
         lines = []                        # 거래대금 블록 통째로 생략
     else:
-        lines.append(f"  ── <b>합계 {(fl.get('total_amount_jo') or 0):,.0f}조</b>")
-
-    a = (cmp.get("amount") or fl.get("ref") or {}) if n_amt else {}
-    ref_src = "같은 시각" if cmp.get("amount") else "종가"
-    for lab, key in (("  5일", "pct_short"), ("20일", "pct_long")):
-        p = a.get(key)
-        if p is not None:
-            lines.append(f"  · <i>{ref_src}평균 대비 · {lab} {p:+.0f}% {_heat(p)}</i>")
+        a = cmp.get("amount") or fl.get("ref") or {}
+        lines.append(f"   ─ <b>합계 {(fl.get('total_amount_jo') or 0):,.0f}조</b>{_pct_tag(a)}")
 
     KEYS = ("개인", "외국인", "기관", "기타법인")
 
@@ -390,7 +388,7 @@ def section_flows(fl, cmp=None):
 
     groups = [(title, merged(names)) for title, names in FLOW_GROUPS]
     if any(g[1] for g in groups):
-        fsrc = "키움 KRX+NXT" if fl.get("flow_src") == "kiwoom" else "네이버 KRX"
+        fsrc = "KRX+NXT" if fl.get("flow_src") == "kiwoom" else "네이버 KRX"
         tbl, unit = _flow_table(groups)
         asof2 = f" · {esc(asof)}" if asof else ""
         lines.append(f"\n💵 <b>순매수</b> <i>({esc(unit)} · {esc(fsrc)}{asof2})</i>")
@@ -404,11 +402,10 @@ def section_flows(fl, cmp=None):
             if not c or c.get("z") is None or abs(c["z"]) < 1.0:
                 continue
             verb = "대량 순매수" if c["today"] > c.get("avg_long", 0) else "대량 순매도"
-            note.append(f"{esc(name)} <i>({c['z']:+.1f}σ {verb})</i>")
+            note.append(f"  ⚡ {esc(name)} <i>({c['z']:+.1f}σ {verb})</i>")
         if note:
-            lines.append("  ⚡ " + " / ".join(note) +
-                         f" <i>· 코스피+선물 {cmp.get('n_long', 0)}일 기준</i>")
-        lines.append("  · <i>개인+외국인+기관+기타법인 = 0</i>")
+            lines += note
+            lines.append(f"    · <i>코스피+선물 {cmp.get('n_long', 0)}일 기준</i>")
 
     return "\n".join(lines)
 
