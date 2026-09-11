@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from datetime import time as dtime
@@ -20,9 +22,15 @@ import requests
 
 KST = timezone(timedelta(hours=9))
 
-# 이 값 이상 움직이면 '유의미 변동'으로 보고 뉴스를 붙인다.
-SIGNIFICANT_PCT = 1.0
-SIGNIFICANT_BP = 5.0          # 금리는 5bp(0.05%p) 이상을 유의미로 본다
+# ★(유의미 변동) = |변동| ≥ Z_STAR × σ. σ는 자산별 최근 60거래일 일변동 표준편차
+# (일 1회 캐시). 고정 1% 룰은 자산별 발화율이 35~85%로 제각각이라 폐기(09-11 분석).
+# 퍼프 '창' 변동엔 sqrt(창시간/24h) 스케일을 적용해 짧은 창을 과대평가하지 않는다.
+Z_STAR = 1.2
+SIGMA_FALLBACK_PCT = 2.0      # σ 소스가 없을 때(신규 자산 등)의 보수적 기본값
+SIGNIFICANT_PCT = 1.0         # (구) 고정 문턱 — z 소스 실패 시 최후 폴백용으로만 유지
+SIGNIFICANT_BP = 5.0
+_SIGMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "data", "sigma_cache.json")
 
 # 퍼페추얼 심볼 목록 — reactions.py(지표 반응 측정)도 이 목록을 쓴다. 순서 유지.
 INSTRUMENTS = [
@@ -34,24 +42,36 @@ INSTRUMENTS = [
 ]
 
 # 시황에 표시할 행. src: perp=퍼페추얼 / kr=지수(장중)+프록시(장외) / bond=금리
+# main: 본장 시세 소스(09-11 개편) — 표시는 본장 전일比, 괄호에 (Perp. 창변동%).
+#   mkidx = api.stock.naver.com/marketindex/{path} / widx = /index/{code}/basic
 DISPLAY = [
     {"name": "미국10Y",  "src": "bond", "code": "US10YT=RR"},
-    {"name": "오일",     "src": "perp", "sym": "CL/USDT:USDT",  "dp": 2},
-    {"name": "금",       "src": "perp", "sym": "XAU/USDT:USDT", "dp": 2},
-    {"name": "나스닥",   "src": "perp", "sym": "QQQ/USDT:USDT", "dp": 2},
+    {"name": "오일",     "src": "perp", "sym": "CL/USDT:USDT",  "dp": 2,
+     "main": ("mkidx", "energy/CLcv1")},
+    {"name": "금",       "src": "perp", "sym": "XAU/USDT:USDT", "dp": 2,
+     "main": ("mkidx", "metals/GCcv1")},
+    {"name": "나스닥",   "src": "perp", "sym": "QQQ/USDT:USDT", "dp": 2,
+     "main": ("widx", ".IXIC")},
     {"name": "코스피",   "src": "kr",   "index": "KOSPI",  "sym": "EWY/USDT:USDT", "dp": 2},
     {"name": "코스닥",   "src": "kr",   "index": "KOSDAQ", "sym": None, "dp": 2},
     {"name": "비트코인", "src": "perp", "sym": "BTC/USDT:USDT", "dp": 0},
 ]
 
-# 주요 종목 — 시황 다음 카테고리. 장중엔 실제 주가(전일比), 장외엔 바이낸스 퍼프
-# (SKHYNIX $696M/24h, SAMSUNG $116M/24h 실측 — 밤사이 미국장 반응이 여기 찍힌다).
+# 주요 종목 — 시황 다음 카테고리. 본장 시세(전일比) + (Perp. 창변동%).
+# SOX=필라델피아 반도체지수(퍼프 프록시 SMH), DRAM=Roundhill Memory ETF(네이버 DRAM.K).
 KEY_STOCKS = [
-    {"name": "SK하이닉스", "sym": "SKHYNIX/USDT:USDT", "code": "000660"},
-    {"name": "삼성전자",   "sym": "SAMSUNG/USDT:USDT", "code": "005930"},
+    {"name": "SOX",        "widx": ".SOX", "sym": "SMH/USDT:USDT", "dp": 2},
+    {"name": "DRAM",       "wstock": "DRAM.K", "sym": "DRAM/USDT:USDT", "dp": 2},
+    {"name": "삼성전자",   "sym": "SAMSUNG/USDT:USDT", "code": "005930", "dp": 0},
+    {"name": "SK하이닉스", "sym": "SKHYNIX/USDT:USDT", "code": "000660", "dp": 0},
 ]
-STOCK_SIG_PCT = 1.5        # 개별주는 지수보다 잘 움직여 유의미 기준을 올린다
+STOCK_SIG_PCT = 1.0        # ★ 기준 통일: 퍼프(괄호) 있으면 퍼프, 없으면 표시 등락률 1%
 STOCK_API = "https://m.stock.naver.com/api/stock/{code}/basic"
+STOCK_DAILY = "https://m.stock.naver.com/api/stock/{code}/price"
+INDEX_DAILY = "https://m.stock.naver.com/api/index/{code}/price"
+MKIDX = "https://api.stock.naver.com/marketindex/{path}"
+WIDX = "https://api.stock.naver.com/index/{code}/basic"
+WSTOCK = "https://api.stock.naver.com/stock/{code}/basic"
 
 # 변동폭 기준시점(앵커) — 15:30(정규장 마감) 단일.
 # 모든 알림이 '직전 거래일 마감 대비'라는 한 가지 기준으로 통일된다.
@@ -65,9 +85,12 @@ SLOTS = {
     "0850": {"label": "정규장 개장 전",  "at": (8, 50)},
     "0930": {"label": "정규장 개장 후",  "at": (9, 30)},
     "1430": {"label": "정규장 마감 전",  "at": (14, 30)},
-    # 1630 은 '오늘 장이 어떻게 마무리됐나'가 목적이라 당일 15:30 앵커를 건너뛰고
+    # 1530/1630 은 '오늘 장이 어떻게 마무리됐나'가 목적이라 당일 15:30 앵커를 건너뛰고
     # 전일 마감부터 잰다(하루 전체). 19:00/20:00 은 당일 15:30 기준(마감 후 변동) 유지.
-    "1630": {"label": "마감 집계 후",    "at": (16, 30), "prev_close": True},
+    # 1530 이 본편(마감 직후·수급은 잠정일 수 있음), 1630 은 확정치가 1530 과 유의미하게
+    # 다를 때만 재발송된다(cli 에서 판정) — 09-11 사용자 요청.
+    "1530": {"label": "정규장 마감",     "at": (15, 35), "prev_close": True},
+    "1630": {"label": "마감 확정 갱신",  "at": (16, 30), "prev_close": True},
     # 일요일 18:00 주말 중간점검(cron 전용). manual=True 라 auto 판정에는 안 잡힌다 —
     # 평일 18시대에 --slot auto 로 돌려도 1630 이 뽑히던 기존 동작을 바꾸지 않기 위함.
     "1800": {"label": "주말 중간점검",   "at": (18, 0), "manual": True},
@@ -205,6 +228,140 @@ def _row_perp(spec, start, end, ex):
     return {"end_px": p1, "chg_pct": chg, "decimals": spec["dp"]}
 
 
+# ── σ (자산별 일변동 표준편차, 60거래일·일 1회 캐시) ─────────────
+def _sigma_cache():
+    try:
+        with open(_SIGMA_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _sigma(key: str, fetch):
+    """오늘 캐시가 있으면 그것, 없으면 fetch() 후 저장. 실패 시 어제 값이라도."""
+    today = datetime.now(KST).strftime("%Y%m%d")
+    cache = _sigma_cache()
+    v = cache.get(key)
+    if v and v[0] == today:
+        return v[1]
+    s = None
+    try:
+        s = fetch()
+    except Exception:
+        pass
+    if s:
+        cache[key] = [today, round(s, 4)]
+        try:
+            os.makedirs(os.path.dirname(_SIGMA_PATH), exist_ok=True)
+            with open(_SIGMA_PATH, "w", encoding="utf-8") as f:
+                json.dump(cache, f)
+        except Exception:
+            pass
+        return s
+    return v[1] if v else None
+
+
+def _std(xs):
+    if len(xs) < 20:
+        return None
+    m = sum(xs) / len(xs)
+    return (sum((x - m) ** 2 for x in xs) / (len(xs) - 1)) ** .5
+
+
+def _sigma_perp(sym, ex=None):
+    def fetch():
+        oh = (ex or exchange()).fetch_ohlcv(sym, "1d", limit=95)
+        cl = [c[4] for c in oh]
+        return _std([(cl[i] / cl[i - 1] - 1) * 100 for i in range(1, len(cl))][-60:])
+    return _sigma(f"perp:{sym}", fetch)
+
+
+def _sigma_index(code):
+    def fetch():
+        rows = []
+        for page in (1, 2, 3, 4):
+            r = requests.get(INDEX_DAILY.format(code=code),
+                             params={"pageSize": 20, "page": page},
+                             headers=UA, timeout=12).json()
+            rows += r if isinstance(r, list) else []
+        chgs, seen = [], set()
+        for x in rows:
+            d = (x.get("localTradedAt") or "")[:10]
+            v = _num(x.get("fluctuationsRatio"))
+            if d and d not in seen and v is not None:
+                seen.add(d)
+                chgs.append(v)
+        return _std(chgs[1:61])
+    return _sigma(f"idx:{code}", fetch)
+
+
+def _sigma_bond():
+    def fetch():
+        import FinanceDataReader as fdr
+        d = fdr.DataReader("FRED:DGS10").dropna()
+        bp = (d.iloc[:, 0].diff() * 100).dropna().tolist()[-60:]
+        return _std(bp)
+    return _sigma("bond:US10Y", fetch)
+
+
+def _star_level(chg, sigma, hours=None) -> int:
+    """★ 단계: z>=1.2 ★ / z>=1.5 ★★ / z>=2.0 ★★★ (09-11 사용자).
+    sigma 없으면 고정 1% 최후 폴백(1단계만)."""
+    if chg is None:
+        return 0
+    if not sigma:
+        return 1 if abs(chg) >= SIGNIFICANT_PCT else 0
+    eff = sigma * ((hours / 24) ** .5) if hours else sigma
+    z = abs(chg) / max(eff, 1e-9)
+    return 3 if z >= 2.0 else 2 if z >= 1.5 else 1 if z >= Z_STAR else 0
+
+
+def _main_quote(main):
+    """본장 시세 (가격, 전일比%) — 네이버 원자재(marketindex)/해외지수/해외개별주."""
+    kind, key = main
+    url = {"mkidx": MKIDX.format(path=key),
+           "widx": WIDX.format(code=key),
+           "wstock": WSTOCK.format(code=key)}[kind]
+    try:
+        j = requests.get(url, headers=UA, timeout=12).json()
+    except Exception:
+        return None, None
+    return _num(j.get("closePrice")), _num(j.get("fluctuationsRatio"))
+
+
+def _last_confirmed(url) -> tuple:
+    """일별 시세 API 의 최근 '확정' 행 — 개장 전엔 전일比가 0 으로 리셋되는
+    basic/폴링 대신 쓴다. 오늘 09시 이전이면 오늘 날짜 행(예상치)을 건너뛴다."""
+    try:
+        rows = requests.get(url, params={"pageSize": 3, "page": 1},
+                            headers=UA, timeout=12).json()
+        if not isinstance(rows, list):
+            return None, None
+        now = datetime.now(KST)
+        today = now.strftime("%Y-%m-%d")
+        for r in rows:
+            d = (r.get("localTradedAt") or "")[:10]
+            if d == today and now.timetz().replace(tzinfo=None) < dtime(9, 5):
+                continue
+            return _num(r.get("closePrice")), _num(r.get("fluctuationsRatio"))
+    except Exception:
+        pass
+    return None, None
+
+
+def _attach_main(row, px, chg):
+    """퍼프 창 변동을 괄호(perp_pct)로 밀고 본장 시세를 앞세운다.
+    화살표·★ 판정(chg_pct)은 밤사이 감지 목적에 맞게 퍼프 쪽을 유지한다."""
+    if px is None or chg is None:
+        return row
+    row["perp_pct"] = row.get("chg_pct")
+    row["end_px"] = px
+    row["chg_label"] = f"{chg:+.2f}%"
+    if row.get("perp_pct") is None:
+        row["chg_pct"] = chg
+    return row
+
+
 def _row_kr(spec, start, end, ex):
     """끝이 오늘 장중이면 실제 지수(전일比), 아니면 퍼페추얼 프록시. 프록시 없으면 None.
 
@@ -216,11 +373,17 @@ def _row_kr(spec, start, end, ex):
             c, ratio = _num(d.get("closePrice")), _num(d.get("fluctuationsRatio"))
             if c is not None and ratio is not None:
                 return {"end_px": c, "chg_pct": ratio, "decimals": spec["dp"]}
-    if not spec.get("sym"):
-        return None                       # 코스닥은 장외 프록시가 없다 — 행 생략
-    r = _row_perp(spec, start, end, ex)
-    r["proxy"] = "EWY"
-    return r
+    # 장외: 본장 마지막 확정(전일 종가·전일比)을 앞세우고, 코스피는 EWY 퍼프를 괄호로
+    px, ch = _last_confirmed(INDEX_DAILY.format(code=spec["index"]))
+    if spec.get("sym"):
+        r = _row_perp(spec, start, end, ex)
+        if px is not None and ch is not None:
+            return _attach_main(r, px, ch)
+        r["proxy"] = "EWY"                # 본장 조회 실패 시 기존 표시로 폴백
+        return r
+    if px is not None and ch is not None:
+        return {"end_px": px, "chg_pct": ch, "decimals": spec["dp"]}
+    return None                           # 코스닥: 본장도 못 얻으면 행 생략(기존 동작)
 
 
 def _poll_stock(code: str) -> dict | None:
@@ -232,24 +395,47 @@ def _poll_stock(code: str) -> dict | None:
 
 
 def _key_stock_rows(start, end, ex) -> list:
-    """주요 종목 행. 코스피 하이브리드와 같은 규칙 — 장중엔 실제 주가, 장외엔 퍼프."""
+    """주요 종목 행 — 본장 시세(전일比) 우선 + (Perp. 창변동%) 괄호.
+
+    SOX 는 지수+SMH 퍼프, DRAM 은 DXI 단독(퍼프 없음), 개별주는
+    장중 basic(실시간) / 장외 일별시세 확정 행 + 자사 퍼프.
+    """
     out = []
     use_index = index_available(start, end)
     for spec in KEY_STOCKS:
         row = None
-        if use_index:
-            b = _poll_stock(spec["code"]) or {}
-            c = _num(str(b.get("closePrice") or "").replace(",", ""))
-            ratio = _num(b.get("fluctuationsRatio"))
-            if c is not None and ratio is not None:
-                row = {"end_px": c, "chg_pct": ratio, "decimals": 0}
+        px = ch = None
+        if spec.get("wstock"):            # 해외 ETF(DRAM 등) — 본장 + (있으면) 퍼프
+            px, ch = _main_quote(("wstock", spec["wstock"]))
+            if not spec.get("sym"):
+                if px is None:
+                    continue
+                row = {"end_px": px, "chg_pct": ch, "decimals": spec["dp"]}
+        elif spec.get("widx"):
+            px, ch = _main_quote(("widx", spec["widx"]))
+        else:
+            if use_index:
+                b = _poll_stock(spec["code"]) or {}
+                px = _num(str(b.get("closePrice") or "").replace(",", ""))
+                ch = _num(b.get("fluctuationsRatio"))
+            if px is None or ch is None:
+                px, ch = _last_confirmed(STOCK_DAILY.format(code=spec["code"]))
         if row is None:
-            row = _row_perp({"sym": spec["sym"], "dp": 1}, start, end, ex)
-            row["proxy"] = "perp"
+            row = _row_perp({"sym": spec["sym"], "dp": spec["dp"]}, start, end, ex)
+            if px is not None and ch is not None:
+                _attach_main(row, px, ch)
+            else:
+                row["proxy"] = "perp"     # 본장 조회 실패 시 기존 표시로 폴백
         row["name"] = spec["name"]
         c = row.get("chg_pct")
-        row["chg_label"] = f"{c:+.2f}%" if c is not None else None
-        row["significant"] = (c is not None and abs(c) >= STOCK_SIG_PCT)
+        if not row.get("chg_label"):
+            row["chg_label"] = f"{c:+.2f}%" if c is not None else None
+        hours = (end - start).total_seconds() / 3600
+        if spec.get("sym"):               # ★ 기준은 퍼프 창 변동 → 퍼프 σ + 창 스케일
+            row["stars"] = _star_level(c, _sigma_perp(spec["sym"], ex), hours)
+        else:                             # 퍼프 없는 본장 전일比 단독 — 기본 σ
+            row["stars"] = _star_level(c, SIGMA_FALLBACK_PCT)
+        row["significant"] = row["stars"] > 0
         out.append(row)
         time.sleep(0.05)
     return out
@@ -279,6 +465,9 @@ def fetch_window(slot: str, now: datetime | None = None):
     for spec in DISPLAY:
         if spec["src"] == "perp":
             row = _row_perp(spec, start, end, ex)
+            if spec.get("main"):
+                px, ch = _main_quote(spec["main"])
+                _attach_main(row, px, ch)
         elif spec["src"] == "kr":
             row = _row_kr(spec, start, end, ex)
         elif spec["src"] == "bond":
@@ -288,14 +477,22 @@ def fetch_window(slot: str, now: datetime | None = None):
         if row is None:
             continue
         row["name"] = spec["name"]
+        hours = (end - start).total_seconds() / 3600
         if row.get("kind") == "yield":
             bp = row.get("chg_bp")
-            row["chg_label"] = f"{bp:+.1f}bp (전일비)" if bp is not None else None
-            row["significant"] = (bp is not None and abs(bp) >= SIGNIFICANT_BP)
+            # bp 대신 %p 로 표기 (+11.3bp → +0.11%), '(전일비)' 꼬리 제거 (09-11 사용자)
+            row["chg_label"] = f"{bp/100:+.2f}%" if bp is not None else None
+            row["stars"] = _star_level(bp, _sigma_bond())             # bp 단위끼리 비교
         else:
             c = row.get("chg_pct")
-            row["chg_label"] = f"{c:+.2f}%" if c is not None else None
-            row["significant"] = (c is not None and abs(c) >= SIGNIFICANT_PCT)
+            if not row.get("chg_label"):          # 본장 라벨(_attach_main)이 있으면 유지
+                row["chg_label"] = f"{c:+.2f}%" if c is not None else None
+            # ★ 기준(chg_pct)이 퍼프 창 변동이면 퍼프 σ + 창 길이 스케일, 아니면 지수 σ
+            if spec["src"] == "perp" or row.get("perp_pct") is not None or row.get("proxy"):
+                row["stars"] = _star_level(c, _sigma_perp(spec.get("sym"), ex), hours)
+            else:
+                row["stars"] = _star_level(c, _sigma_index(spec["index"]))
+        row["significant"] = row["stars"] > 0
         out.append(row)
         time.sleep(0.05)
     return {"slot": slot, "label": SLOTS[slot]["label"], "start": start, "end": end,

@@ -195,7 +195,7 @@ def kr_impact(us_sectors, quote_rows, top_n: int = 5, min_chg: float = 1.0):
             continue
         kr, tickers = hit
         seen.add(kr)
-        out.append({"kr_sector": kr,
+        out.append({"kr_sector": kr, "direction": "up",
                     "driver": f"미국 {s['sector']}({s['ticker']}) {s['change_pct']:+.2f}%",
                     "tickers": [{"name": n, "code": c} for n, c in tickers],
                     "note": ""})
@@ -205,12 +205,12 @@ def kr_impact(us_sectors, quote_rows, top_n: int = 5, min_chg: float = 1.0):
         if not r["significant"]:
             continue
         for kr, direction, tickers, note in QUOTE_TO_KR.get(r["name"], []):
-            good = (direction == "up" and r["chg_pct"] > 0) or \
-                   (direction == "down" and r["chg_pct"] > 0)
-            if not good or kr in seen:
+            # 매핑은 전부 '드라이버 상승' 전제(note 참고). direction 은 트리거 조건이
+            # 아니라 해당 한국 업종의 예상 방향이다 (up=수혜, down=피해).
+            if r["chg_pct"] <= 0 or kr in seen:
                 continue
             seen.add(kr)
-            out.append({"kr_sector": kr,
+            out.append({"kr_sector": kr, "direction": direction,
                         "driver": f"{r['name']} {r['chg_pct']:+.2f}%",
                         "tickers": [{"name": n, "code": c} for n, c in tickers if c],
                         "note": note})

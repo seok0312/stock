@@ -134,6 +134,20 @@ def main(argv=None):
             except Exception as e:
                 print(f"  스냅샷 저장/비교 실패(계속 진행): {type(e).__name__}: {e}")
 
+    # 16:30 은 15:30 마감 알림 이후 '확정치가 유의미하게 달라졌을 때'만 재발송(09-11).
+    # 거래대금은 NXT 애프터로 항상 늘어나 대조에서 빼고, 순매수·비차익 100억 이상 변화 기준.
+    if slot == "1630" and fl:
+        try:
+            import flows as _flm
+            diff = _flm.close_ref_diff(fl, now)
+            if diff is not None and diff < 100:
+                print(f"  15:30 알림 대비 순매수 최대 변화 {diff:.0f}억 — 확정 재알림 생략")
+                return
+            if diff is not None:
+                print(f"  15:30 대비 순매수 최대 변화 {diff:.0f}억 — 확정 갱신 재발송")
+        except Exception as e:
+            print(f"  1530 대조 실패(그냥 발송): {type(e).__name__}: {e}")
+
     if not args.no_news:
         try:
             import news as news_mod
@@ -145,6 +159,7 @@ def main(argv=None):
     sector_map = {}
     nxt_pm = None
     us_leaders = {}
+    us_mv = None
     if not args.no_sectors:
         if slot in US_SECTOR_SLOTS:
             # 미국장이 막 끝났고 한국 데이터는 아직 전일치 → 미국 섹터가 근거
@@ -178,6 +193,15 @@ def main(argv=None):
                         us_leaders[nm] = ld
             except Exception as e:
                 print(f"  미국섹터 수집 실패(계속 진행): {type(e).__name__}: {e}")
+            try:
+                # 섹터로 안 잡히는 개별주 독주 (AAPL 아이폰 이벤트 등) — 뉴스+한국 관련주
+                import us_movers as usm
+                us_mv = usm.movers(win["start"], win["end"])
+                if us_mv:
+                    print(f"  미국 특이 종목 {len(us_mv)}건: "
+                          + ", ".join(m["sym"] for m in us_mv))
+            except Exception as e:
+                print(f"  특이 종목 수집 실패(계속 진행): {type(e).__name__}: {e}")
         elif slot == "0850":
             try:
                 import nxt
@@ -254,10 +278,16 @@ def main(argv=None):
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
                        leaders=ld, us_leaders=us_leaders, nxt_pm=nxt_pm,
-                       events=ev_ctx,
+                       events=ev_ctx, us_movers=us_mv,
                        flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)
+    if slot == "1530" and fl and not args.dry_run:
+        try:
+            import flows as _flm
+            _flm.save_close_ref(fl, now)      # 16:30 대조 기준점
+        except Exception as e:
+            print(f"  1530 기준점 저장 실패: {type(e).__name__}: {e}")
 
     # 반응 로그는 전송 뒤에 — 자산당 봉 조회가 붙어 알림이 늦어지면 안 된다.
     if evs and not args.no_events:

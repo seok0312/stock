@@ -8,8 +8,9 @@
     사온 종목일수록 익일 갭이 약하다. 과거 확정치 기반이라 잠정 노이즈에도 강함 (09-09 테스트)
   · 캐퍼시티: 거래대금 2,000억↑ 후보의 픽 평균 거래대금 ~1.6조 — 억 단위 베팅에 무리 없음
 
-기준(사용자 합의):
-  후보 = 등락률 >= +5% AND 당일 거래대금 >= 2,000억 (일평균 ~12종목)
+기준(09-11 개편 — 상수 정의 위 주석 참고):
+  후보 = 등락률 >= 시총구간별 문턱(10조↑3%/1~10조 5%/1조↓7%)
+         AND 당일 거래대금 >= 시장 전체의 0.5%
   픽   = 과열 합성점수(거래대금배율 + 등락률 + 연속순매수일수 백분위 합) 하위/상위 K (A/B 기록)
   수급 = 키움 ka10059: 과거 확정 + '오늘' 행 잠정치(15:20, KRX 5차 공표) — 실전 재현 조건
 
@@ -35,10 +36,24 @@ for _p in (os.path.abspath(os.path.join(HERE, "..")), HERE):
         sys.path.insert(0, _p)
 PATH = os.path.join(HERE, "data", "closebet_picks.jsonl")
 
-CHG_MIN = 5.0            # 후보: 등락률 +5% 이상
-AMT_MIN_EOK = 2000       # + 당일 거래대금 2,000억 이상 (캐퍼시티 요건)
+# 후보 기준 (09-11 백테스트 재검증으로 개편):
+#   거래대금 — 절대값 대신 시장 전체(코스피+코스닥) 거래대금의 0.5%.
+#     절대 2,000억과 성능 동일(bot +1.24% vs +1.25%)하면서 후보 수가 장세에
+#     적응(후보수-시장규모 상관 +0.16 vs 절대제 +0.42, 표준편차 4.5 vs 6.3).
+#   등락률 — 시총 구간별: 10조↑ 3% / 1~10조 5% / 1조↓ 7%.
+#     고정 5%는 삼성전자급 대형주를 배제(80일 중 0회) → 구간제로 25회 포함되고
+#     bot +1.22%(t +3.1, 유효 58일)로 표본·유의성 모두 개선.
+AMT_PCT_MKT = 0.5        # 후보: 거래대금 >= 시장 전체의 0.5%
+CHG_TIERS = ((10e12, 3.0), (1e12, 5.0), (0, 7.0))   # (시총 하한, 등락률 문턱)
 TOP_K = 5
 MAX_CANDS = 40           # 폭주 장 대비 키움 호출 상한 (거래대금순 상위만)
+
+
+def _chg_min(mc: float) -> float:
+    for floor, th in CHG_TIERS:
+        if (mc or 0) >= floor:
+            return th
+    return CHG_TIERS[-1][1]
 
 
 def _load():
@@ -90,8 +105,12 @@ def record(now=None) -> int:
     if snap.empty:
         print("스냅샷 실패")
         return 0
-    cands = snap[(snap["등락률"] >= CHG_MIN) & (snap["거래대금"] >= AMT_MIN_EOK * 1e8)]
+    mkt_total = float(snap["거래대금"].sum())        # 시장 전체 거래대금(원, 전종목 합)
+    amt_floor = mkt_total * AMT_PCT_MKT / 100
+    chg_floor = snap["시가총액"].map(_chg_min)
+    cands = snap[(snap["등락률"] >= chg_floor) & (snap["거래대금"] >= amt_floor)]
     cands = cands.sort_values("거래대금", ascending=False).head(MAX_CANDS)
+    print(f"시장 거래대금 {mkt_total/1e12:.1f}조 → 후보 문턱 {amt_floor/1e8:,.0f}억")
     if len(cands) < 4:
         print(f"후보 {len(cands)}개 — 오늘은 장이 조용함, 기록 생략")
         return 0

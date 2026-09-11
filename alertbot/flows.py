@@ -367,3 +367,62 @@ if __name__ == "__main__":
         cur = h["합계"].iloc[-1]
         print(f"\n   최근 {len(h)}일 평균 {avg:.2f}조 · 최신 {cur:.2f}조 "
               f"({(cur/avg-1)*100:+.1f}% vs 평균)")
+
+
+# ── 15:30 마감 알림 ↔ 16:30 확정 대조 (09-11 사용자 요청) ────────────
+# 1530 슬롯이 발송한 수급을 저장해 두고, 1630 은 확정치가 유의미하게 다를 때만
+# 재발송한다. 거래대금은 NXT 애프터(15:40~) 체결로 항상 늘어나므로 대조에서 제외 —
+# 대조 대상은 투자자별 순매수(개인/외국인/기관/기타법인)와 프로그램 비차익.
+import json as _json
+import os as _os
+
+_CLOSE_REF = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                           "data", "flow_close_ref.json")
+
+
+def _close_ref(fl) -> dict:
+    out = {}
+    for m in (fl or {}).get("rows") or []:
+        if m.get("error"):
+            continue
+        d = {}
+        for k, v in (m.get("flow_eok") or {}).items():
+            if v is not None:
+                d[k] = round(v)
+        p = (m.get("program_eok") or {}).get("비차익")
+        if p is not None:
+            d["비차익"] = round(p)
+        if m.get("amount_won"):
+            d["_amt"] = round(m["amount_won"] / 1e8)   # 기록용 (대조 제외)
+        if d:
+            out[m.get("label") or "?"] = d
+    return out
+
+
+def save_close_ref(fl, now=None) -> None:
+    now = now or datetime.now(KST)
+    _os.makedirs(_os.path.dirname(_CLOSE_REF), exist_ok=True)
+    with open(_CLOSE_REF, "w", encoding="utf-8") as f:
+        _json.dump({"date": now.strftime("%Y%m%d"), "ref": _close_ref(fl)},
+                   f, ensure_ascii=False)
+
+
+def close_ref_diff(fl, now=None):
+    """1530 저장분 대비 최대 변화(억). 오늘 저장분이 없으면 None(=그냥 발송)."""
+    now = now or datetime.now(KST)
+    try:
+        with open(_CLOSE_REF, encoding="utf-8") as f:
+            doc = _json.load(f)
+    except Exception:
+        return None
+    if doc.get("date") != now.strftime("%Y%m%d"):
+        return None
+    ref, cur = doc.get("ref") or {}, _close_ref(fl)
+    diff = 0
+    for mk in set(ref) | set(cur):
+        a, b = ref.get(mk) or {}, cur.get(mk) or {}
+        for k in set(a) | set(b):
+            if k == "_amt":
+                continue
+            diff = max(diff, abs((a.get(k) or 0) - (b.get(k) or 0)))
+    return diff

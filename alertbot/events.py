@@ -218,8 +218,8 @@ def _us_earnings(start: datetime, end: datetime) -> list:
                 continue
             eps = (x.get("epsForecast") or "").strip()
             out.append({
-                "when": when, "country": "US",
-                "name": f"{sym} 실적", "name_kr": f"{sym} 실적",
+                "when": when, "country": "US", "sym": sym,
+                "name": f"{sym} 실적(EPS)", "name_kr": f"{sym} 실적(EPS)",
                 "actual": None, "consensus": None, "previous": None, "unit": None,
                 "vol": "HIGH", "dev": None, "better": None, "speech": False,
                 "tags": {"실적"}, "src": "us_earnings",
@@ -601,6 +601,111 @@ def stars(e) -> str:
     return "***" if e.get("vol") == "HIGH" else "**"
 
 
+def _stock_react(sym: str, when, now=None):
+    """실적 발표 시각 이후 그 종목의 변동%. 바이낸스 주식 퍼프 우선(24시간 연속이라
+    장마감 후 발표 반응이 그대로 찍힘), 없으면 네이버 시간외 등락률."""
+    now = now or datetime.now(KST)
+    try:
+        import quotes
+        ex = quotes.exchange()
+        p0 = quotes._close_at(f"{sym}/USDT:USDT", when, ex)
+        p1 = quotes._close_at(f"{sym}/USDT:USDT", now, ex)
+        if p0 and p1:
+            return (p1 / p0 - 1) * 100
+    except Exception:
+        pass
+    for suf in (".O", ".K", ".N"):
+        try:
+            j = requests.get(f"https://api.stock.naver.com/stock/{sym}{suf}/basic",
+                             headers={"User-Agent": "Mozilla/5.0"}, timeout=10).json()
+            over = (j.get("overMarketPriceInfo") or {})
+            v = over.get("fluctuationsRatio")
+            if v is not None:
+                return float(str(v).replace(",", ""))
+        except Exception:
+            continue
+    return None
+
+
+def _set_earnings_verdict(e, eps, cons, metric: str = "EPS") -> None:
+    try:
+        sp = (float(eps) / float(cons) - 1) * 100 if float(cons) else None
+    except (TypeError, ValueError, ZeroDivisionError):
+        sp = None
+    band = 2.0 if metric == "EPS" else 0.5      # 매출은 ±0.5% 밖이면 상회/하회
+    v = "부합" if sp is None or abs(sp) < band else ("상회" if sp > 0 else "하회")
+    if sp is not None and abs(sp) >= (10 if metric == "EPS" else 3):
+        v += "(서프라이즈)"
+    if metric == "EPS":
+        e["verdict_str"] = v
+        e["nums_str"] = f"실제 ${eps} / 예상 ${cons}"
+    else:                                       # 매출 잠정 — EPS 확정되면 교체됨
+        e["verdict_str"] = f"매출 {v}"
+        e["nums_str"] = f"매출 실제 {eps}억$ / 예상 {cons}억$"
+    e["note"] = None                       # 'EPS 예상 …' 메모는 실제치로 대체됐다
+
+
+def _eps_from_news(sym: str):
+    """발표 직후 나스닥 API 갱신 전(실측: 수 시간 지연)에는 속보 제목에서 EPS 를 뽑는다.
+
+    스탁허브/네이버 속보 포맷이 일정하다: '오라클 1분기 조정 주당순이익 1.47달러, 예상치 1.39달러'
+    매출 속보와 헷갈리지 않게 EPS/주당순이익 문구가 있는 제목만 본다."""
+    try:
+        import news
+        kr = news.US_TICKER_KR.get(sym, sym)
+        pool = news._fetch_pool()
+    except Exception:
+        return None
+    import re as _re
+    pat_eps = _re.compile(r"(?:EPS|주당\s*순?이익)[^0-9$]{0,14}\$?\s*([\d.]+)\s*달러?"
+                          r"[^0-9]{0,12}예상(?:치)?\s*\$?\s*([\d.]+)")
+    # 실측 속보 포맷: '오라클 1분기 조정 매출 193.5억 달러, 예상치 191.3억 달러'
+    pat_rev = _re.compile(r"매출[^0-9$]{0,10}([\d.,]+)\s*억\s*달러"
+                          r"[^0-9]{0,12}예상(?:치)?\s*([\d.,]+)\s*억?\s*달러")
+    rev = None
+    for it in pool:
+        t = it.get("title") or ""
+        if sym not in t and kr not in t:
+            continue
+        m = pat_eps.search(t)
+        if m:
+            return "EPS", float(m.group(1)), float(m.group(2))
+        m2 = pat_rev.search(t)
+        if m2 and rev is None and "인프라" not in t and "라이선스" not in t and "지원" not in t:
+            rev = ("매출", float(m2.group(1).replace(",", "")),
+                   float(m2.group(2).replace(",", "")))
+    return rev
+
+
+def _enrich_earnings(e, now) -> None:
+    """발표된 미국 실적에 실제 EPS 를 붙인다.
+
+    1차: 나스닥 earnings-surprise API (확정치·정확) — 단 발표 후 수 시간 지연.
+    2차: 뉴스 속보 제목 파싱 — 발표 직후 슬롯(06:00 등)을 커버한다."""
+    if e.get("verdict_str"):
+        return
+    try:
+        j = requests.get(
+            f"https://api.nasdaq.com/api/company/{e['sym']}/earnings-surprise",
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            timeout=12).json()
+        rows = ((j.get("data") or {}).get("earningsSurpriseTable") or {}).get("rows") or []
+    except Exception:
+        rows = []
+    for r in rows[:2]:
+        try:
+            d = datetime.strptime(r.get("dateReported") or "", "%m/%d/%Y").replace(tzinfo=KST)
+        except ValueError:
+            continue
+        if abs((now - d).days) > 4:
+            continue
+        _set_earnings_verdict(e, r.get("eps"), r.get("consensusForecast"))
+        return
+    got = _eps_from_news(e["sym"])
+    if got:
+        _set_earnings_verdict(e, got[1], got[2], metric=got[0])
+
+
 def brief(events, win, quote_rows=None, sector_names=None, now=None,
           max_done: int = 3, max_ahead: int = 5, only_high: bool = True) -> dict:
     """렌더러가 그대로 찍을 수 있는 형태로 가공.
@@ -627,14 +732,23 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
     for e in sorted(done_raw, key=lambda x: x["when"], reverse=True):
         if only_high and e.get("vol") != "HIGH":
             continue
-        if e.get("actual") is None and not e.get("note"):
+        if e.get("src") == "us_earnings" and e.get("sym"):
+            _enrich_earnings(e, now)      # 발표 후 실제 EPS → 상회/부합/하회
+        if e.get("actual") is None and not e.get("note") and not e.get("verdict_str"):
             continue          # 수치도 메모도 없으면 브리핑에 담을 내용이 없다
         # 창 안의 발표만 시황 등락률과 나란히 둔다. 20시간 전 지표를 오늘 창의
         # 등락률과 연결하면 인과처럼 보이지만 근거가 없다.
         in_win = win["start"] <= e["when"] <= win["end"]
+        assets = link_assets(e, quote_rows) if in_win else []
+        if e.get("src") == "us_earnings" and e.get("sym") and in_win:
+            # 개별 실적의 반응은 지수가 아니라 그 종목이 본체다 — 나스닥 + 해당 종목만
+            assets = [a for a in assets if a[0] == "나스닥"]
+            m = _stock_react(e["sym"], e["when"], now)
+            if m is not None:
+                assets.append((e["sym"], m))
         done.append({"when": e["when"], "label": label(e), "stars": stars(e),
                      "verdict": verdict_text(e), "nums": numbers_text(e),
-                     "assets": link_assets(e, quote_rows) if in_win else [],
+                     "assets": assets,
                      "react": reactions.react_text(e, rows=rrows) if reactions else None,
                      "note": e.get("note")})
         if len(done) >= max_done:

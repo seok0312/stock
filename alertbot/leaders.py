@@ -72,23 +72,8 @@ def fetch_leaders(top: int = 8, min_change: float = 2.0, use_kiwoom: bool = True
             "프로그램": _f(r.get("프로그램순매수(억)")), "점수": _f(r.get("점수")),
         })
 
-    # 수급을 '주'가 아니라 '억원'으로 보여주기 위해 상위 종목만 금액으로 재조회.
-    # ka10059 금액 응답 단위는 백만원 → 억원으로 환산(/100).
-    if src == "kiwoom":
-        try:
-            import time
-            from closebet.kiwoom import KiwoomClient
-            kc = KiwoomClient()
-            for x in out:
-                fl = kc.stock_flow(x["종목코드"], date, amount=True) or {}
-                if fl.get("외국인") is not None:
-                    x["외국인"] = fl["외국인"] / 100.0
-                if fl.get("기관") is not None:
-                    x["기관"] = fl["기관"] / 100.0
-                time.sleep(0.25)
-        except Exception as e:
-            print(f"  수급 금액 조회 실패(수량으로 대체): {type(e).__name__}: {str(e)[:80]}")
-
+    # (09-11) 수급 금액 재조회 제거 — 표시에서 거래원별 순매수를 빼기로 해서
+    # 종목당 ka10059 추가 호출(8콜)이 불필요해졌다. 수급은 점수 계산에만 쓰인다.
     return {"date": date, "source": src, "rows": out}
 
 

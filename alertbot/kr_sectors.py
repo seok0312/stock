@@ -88,12 +88,16 @@ def fetch_upjong(top: int = 3):
 
 def fetch_themes(top: int = 3, frame=None):
     """테마 등락률 + 주도주. {'up': [...], 'down': [...]}
-    각 [{name, change_pct, d3_pct, leaders:[..], score}]
+    각 [{name, change_pct, d3_pct, amt_eok, leaders:[..], score}]
 
-    frame(전종목 스냅샷)이 있으면 상승 테마를 '주도주에 실린 돈'으로 다시 줄 세운다:
-      score = Σ 주도주 max(0, 등락률) × 거래대금(억)
-    테마 등락률만 보면 거래대금이 안 실린 소형 테마가 위로 온다 — 종가베팅 관점에선
-    상승률과 유동성이 함께 있어야 주도 테마다. 하락 테마는 참고용이라 등락률 순 유지."""
+    1차: 키움 ka90001/ka90002 (네이버 테마 페이지는 2026-09 JS 렌더링 개편으로 표가
+    사라져 read_html 이 0개를 돌려준다 — 09-10 20:00 알림에서 테마 실종된 원인).
+    frame(전종목 스냅샷)이 있으면 상승 테마를 '구성종목에 실린 돈'으로 다시 줄 세운다:
+      score = Σ 구성종목 max(0, 등락률) × 거래대금(억)
+    하락 테마는 참고용이라 등락률 순 유지."""
+    th = _themes_kiwoom(top, frame)
+    if th:
+        return th
     for t in _read(THEME):
         cols = _flat(t.columns)
         if "테마명" not in cols:
@@ -135,6 +139,78 @@ def fetch_themes(top: int = 3, frame=None):
         down = [x for x in rows if x["change_pct"] < 0][-top:][::-1]
         return {"up": up, "down": down, "n": len(rows)}
     return None
+
+
+def _themes_kiwoom(top: int = 3, frame=None):
+    """키움 테마 TR 기반 주도 테마. 실패 시 None (호출부가 네이버 폴백).
+
+    ka90001(테마그룹, 100개·flu_rt 당일·dt_prft_rt 기간) 1콜 → 상승 상위 10개만
+    ka90002(구성종목)로 열어 frame 과 매칭해 에너지·대표주·거래대금을 계산한다.
+    구성종목 stk_cd 는 '005930_AL' 꼴이라 언더스코어 앞만 쓴다.
+    """
+    import time as _t
+    try:
+        kc = _kc()
+        d, _ = kc.request("ka90001", {"qry_tp": "0", "date_tp": "1",
+                                      "flu_pl_amt_tp": "1", "stex_tp": "3"},
+                          endpoint="/api/dostk/thme")
+    except Exception:
+        return None
+    rows = []
+    for r in d.get("thema_grp") or []:
+        c = _pct(r.get("flu_rt"))
+        nm = (r.get("thema_nm") or "").strip()
+        if c is None or not nm:
+            continue
+        rows.append({"name": nm, "code": r.get("thema_grp_cd"), "change_pct": c,
+                     "d3_pct": _pct(r.get("dt_prft_rt")), "leaders": [],
+                     "amt_eok": None})
+    if not rows:
+        return None
+    rows.sort(key=lambda x: x["change_pct"], reverse=True)
+
+    chg_map, amt_map = {}, {}
+    if frame is not None:
+        try:
+            names = frame["종목명"].tolist()
+            chg_map = dict(zip(names, frame["등락률"].tolist()))
+            amt_map = dict(zip(names, (frame["거래대금"] / 1e8).tolist()))
+        except Exception:
+            pass
+
+    scored = []
+    for t in [x for x in rows if x["change_pct"] > 0][:10]:
+        try:
+            d2, _ = kc.request("ka90002", {"date_tp": "1", "thema_grp_cd": t["code"],
+                                           "stex_tp": "3"}, endpoint="/api/dostk/thme")
+            members = [(s.get("stk_nm") or "").strip()
+                       for s in d2.get("thema_comp_stk") or []]
+        except Exception:
+            members = []
+        if members and chg_map:
+            energy = lambda n: max(0.0, chg_map.get(n) or 0.0) * (amt_map.get(n) or 0.0)
+            t["score"] = sum(energy(n) for n in members)
+            t["amt_eok"] = sum(amt_map.get(n) or 0.0 for n in members) or None
+            t["leaders"] = [n for n in sorted(members, key=energy, reverse=True)
+                            if amt_map.get(n)][:2]
+        else:
+            t["score"] = 0.0
+        scored.append(t)
+        _t.sleep(0.15)
+    if chg_map:
+        scored.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+    up, used = [], set()
+    for t in scored:
+        ls = set(t["leaders"])
+        if ls and ls & used:              # 같은 주도주 = 같은 재료인 테마 중복 제거
+            continue
+        up.append(t)
+        used |= ls
+        if len(up) >= top:
+            break
+    down = [x for x in rows if x["change_pct"] < 0][-top:][::-1]
+    return {"up": up, "down": down, "n": len(rows), "src": "kiwoom"}
 
 
 def _score_by_leaders(rows, frame) -> None:
@@ -229,6 +305,11 @@ def fetch_upjong_kiwoom(top: int = 3):
 
     up = pick([x for x in liquid if x["change_pct"] > 0])
     down = pick([x for x in reversed(liquid) if x["change_pct"] < 0])
+    # 코스피·코스닥 동명 업종이 상승/하락 양쪽에 뜨면(09-10 '기계/장비') 시장을 밝힌다
+    both = {x["name"] for x in up} & {x["name"] for x in down}
+    for x in up + down:
+        if x["name"] in both:
+            x["name"] += "(코스피)" if x.get("mrkt_tp") == "0" else "(코스닥)"
     return {"up": up, "down": down, "n": len(rows), "src": "kiwoom"}
 
 

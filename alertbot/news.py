@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
-"""유의미 변동(±0.5%) 자산의 원인 뉴스 수집 — 구글 뉴스 RSS(한국어).
+"""유의미 변동(±0.5%) 자산의 원인 뉴스 수집.
 
-CryptoPanic은 403(키 필요), finviz 뉴스는 JS 로딩이라 제외.
-구글 뉴스 RSS는 키 불필요·한국어 지원·시간필터(when:) 지원으로 이 용도에 가장 적합.
+1차 소스(사용자 지정, 09-11): 네이버 증권뉴스 + 스탁허브 — 두 곳을 합친 풀에서
+키워드/티커 매칭으로 고른다. 매칭이 없으면 구글 뉴스 RSS 로 폴백.
+  · 네이버 m.stock front-api: category(mainnews 주요/flashnews 속보) + worldnews(해외,
+    종목 태깅). pageSize<=60, 시간필터 없음(datetime 으로 클라이언트 필터), 무인증.
+    국내 기사 링크는 officeId+articleId 로 n.news.naver.com 조립.
+  · 스탁허브 /api/news?tab=all&limit=100 — AI 번역 애그리게이터(해외속보/국내/공시).
+    해외속보의 link 는 소스 홈뿐이라 그 경우 stockhub.kr/news/{id} 상세로 링크.
 """
 from __future__ import annotations
 
@@ -30,6 +35,125 @@ QUERY = {
     "미국10Y":  "미국 국채금리 OR 미국채 10년물",
     "비트코인": "비트코인 시세",
 }
+
+
+# ── 1차 소스: 네이버 증권뉴스 + 스탁허브 풀 ─────────────────────
+NAVER_CAT = "https://m.stock.naver.com/front-api/news/category"
+NAVER_WORLD = "https://m.stock.naver.com/front-api/news/worldnews"
+STOCKHUB = "https://stockhub.kr/api/news"
+
+# 자산명 → 풀 제목 매칭 키워드 (QUERY 와 별개 — 풀은 이미 한국어 기사라 단순 부분일치)
+KEYWORDS = {
+    "오일":     ("유가", "WTI", "원유", "OPEC"),
+    "금":       ("금값", "금 선물", "국제 금", "금 가격"),
+    "나스닥":   ("나스닥", "뉴욕증시", "미 증시", "미국 증시", "S&P"),
+    "코스피":   ("코스피", "한국 증시", "국내 증시"),
+    "코스닥":   ("코스닥",),
+    "SK하이닉스": ("SK하이닉스", "하이닉스"),
+    "삼성전자": ("삼성전자",),
+    "미국10Y":  ("국채금리", "국채 금리", "10년물", "연준", "금리 인상", "금리 인하"),
+    "비트코인": ("비트코인",),
+}
+
+_pool_cache = {"ts": None, "items": []}
+
+
+def _dt14(s):
+    try:
+        return datetime.strptime(str(s), "%Y%m%d%H%M%S").replace(tzinfo=KST)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fetch_pool():
+    """네이버(주요+속보+해외) + 스탁허브(all) 합본. 슬롯당 1회만 (120초 캐시)."""
+    now = datetime.now(KST)
+    if _pool_cache["ts"] and (now - _pool_cache["ts"]).total_seconds() < 120:
+        return _pool_cache["items"]
+    items = []
+    for cat in ("mainnews", "flashnews"):
+        try:
+            r = requests.get(NAVER_CAT, params={"category": cat, "pageSize": 60, "page": 1},
+                             headers=UA, timeout=15).json()
+            for it in r.get("result") or []:
+                oid, aid = it.get("officeId"), it.get("articleId")
+                items.append({
+                    "title": (it.get("title") or "").strip(),
+                    "url": f"https://n.news.naver.com/mnews/article/{oid}/{aid}",
+                    "source": (it.get("officeName") or "").strip(),
+                    "published": _dt14(it.get("datetime")),
+                    "tickers": (), "main": cat == "mainnews"})
+        except Exception:
+            pass
+    try:
+        r = requests.get(NAVER_WORLD, params={"pageSize": 60, "page": 1},
+                         headers=UA, timeout=15).json()
+        for it in r.get("result") or []:
+            oid, aid = it.get("officeId"), it.get("articleId")
+            tks = tuple((x.get("itemName") or "").upper()
+                        for x in it.get("relatedItems") or [])
+            items.append({
+                "title": (it.get("title") or "").strip(),
+                "url": f"https://m.stock.naver.com/investment/news/worldnews/{oid}/{aid}",
+                "source": (it.get("officeName") or "").strip(),
+                "published": _dt14(it.get("datetime")),
+                "tickers": tks, "main": False})
+    except Exception:
+        pass
+    try:
+        r = requests.get(STOCKHUB, params={"page": 1, "limit": 100, "tab": "all"},
+                         headers=UA, timeout=15).json()
+        for it in r.get("data") or []:
+            lk = (it.get("link") or "").strip()
+            # 해외속보류는 link 가 기사 아닌 소스 홈/트위터 계정 → 스탁허브 상세로
+            if (not lk.startswith("http")
+                    or ("x.com" in lk or "twitter.com" in lk) and "/status/" not in lk
+                    or lk.rstrip("/").endswith(("financialjuice.com", "x.com"))):
+                lk = f"https://stockhub.kr/news/{it.get('id')}"
+            ts = it.get("timestamp")
+            pub = (datetime.fromtimestamp(ts, tz=KST) if ts else None)
+            items.append({
+                "title": (it.get("title") or "").strip(),
+                "url": lk,
+                "source": (it.get("source") or "스탁허브").strip(),
+                "published": pub,
+                "tickers": tuple((t or "").upper() for t in it.get("tickers") or []),
+                "main": it.get("importance") == "high"})
+    except Exception:
+        pass
+    # 제목 앞부분 기준 중복 제거 (네이버-스탁허브 간 같은 기사)
+    seen, out = set(), []
+    for it in items:
+        if not it["title"] or any(w in it["title"] for w in _SPAM):
+            continue
+        key = it["title"][:24]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+    _pool_cache.update(ts=now, items=out)
+    return out
+
+
+def _pool_match(keywords=(), tickers=(), limit=2, start=None, end=None):
+    """풀에서 창 안 + (제목 키워드 or 티커 교집합) 기사 선별. 주요뉴스 우선, 최신순."""
+    tset = {t.upper() for t in tickers or ()}
+    hits = []
+    for it in _fetch_pool():
+        p = it["published"]
+        if p is None:
+            continue
+        if start is not None and p < start:
+            continue
+        if end is not None and p > end:
+            continue
+        if (keywords and any(k in it["title"] for k in keywords)) \
+                or (tset and tset & set(it["tickers"])):
+            hits.append(it)
+    hits.sort(key=lambda x: x["published"], reverse=True)
+    hits.sort(key=lambda x: not x["main"])          # 안정 정렬 → 주요뉴스 먼저, 그 안은 최신순
+    return [{"title": h["title"], "url": h["url"], "source": h["source"],
+             "published": h["published"]} for h in hits[:limit]]
 
 
 def _parse_pubdate(s):
@@ -94,15 +218,19 @@ def _rss(q, hours):
 
 
 def fetch_news(asset: str, hours: int = 12, limit: int = 3, start=None, end=None):
-    """[{title, url, source, published}] — 최신순. start/end 를 주면 그 구간 기사만."""
+    """[{title, url, source, published}] — 네이버·스탁허브 풀 우선, 없으면 구글 RSS."""
+    if start is None and end is None:
+        start = datetime.now(KST) - timedelta(hours=hours)
+    hits = _pool_match(KEYWORDS.get(asset) or (asset,), limit=limit,
+                       start=start, end=end)
+    if hits:
+        return hits
     q = QUERY.get(asset)
     if not q:
         return []
     root = _rss(q, _query_hours(start, hours))
     if root is None:
         return []
-    if start is None and end is None:
-        start = datetime.now(KST) - timedelta(hours=hours)
     return _pick(root, limit, start, end)
 
 
@@ -203,11 +331,21 @@ def topic_news(name: str, kind: str = "kr", hours: int = 24, limit: int = 1,
                주도주 회사명 한글표기를 우선 검색어로 쓴다.
     kind="kr": 업종/테마명 그대로.
     """
+    if start is None and end is None:
+        start = datetime.now(KST) - timedelta(hours=hours)
     if kind == "us":
-        names = [US_TICKER_KR.get(t) for t in (tickers or [])]
-        names = [n for n in names if n][:2]
+        # 풀 우선: 스탁허브 해외뉴스는 미국 티커 태깅, 네이버 해외뉴스도 relatedItems 보유
+        kws = tuple(n for n in (US_TICKER_KR.get(t) for t in tickers or []) if n)
+        hits = _pool_match(kws or (name,), tickers=tickers or (), limit=limit,
+                           start=start, end=end)
+        if hits:
+            return hits
+        names = list(kws)[:2]
         q = " OR ".join(names) if names else US_SECTOR_Q.get(name, f"미국 {name}주")
     else:
+        hits = _pool_match((name,), limit=limit, start=start, end=end)
+        if hits:
+            return hits
         q = f"{name} 주가 OR {name} 급등"
     root = _rss(q, _query_hours(start, hours))
     if root is None:
