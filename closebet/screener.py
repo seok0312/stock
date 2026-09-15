@@ -38,18 +38,27 @@ def screen_leaders(cfg: Settings = DEFAULT) -> tuple:
     if cfg.top_by_value:
         df = df.head(cfg.top_by_value)
 
-    # 조건 필터: 최소 거래대금 + 등락률 범위
+    # 조건 필터: 최소 거래대금 + '시총구간별' 등락률 문턱 (09-15 — 세 요소 고려)
+    #   대형주는 작은 %도 주도주다(삼성전자 +3% 등). 고정 문턱은 대형주를 배제해서
+    #   시총으로 눈높이를 조절한다: 10조↑ ×0.6 / 1~10조 ×1.0 / 1조↓ ×1.4.
+    #   (픽 백테스트에서 검증한 3%/5%/7% 구간과 같은 비율)
     df = df[df["거래대금"] >= cfg.min_trading_value]
-    df = df[df["등락률"] >= cfg.min_change_pct]
+    mc = pd.to_numeric(df.get("시가총액"), errors="coerce").fillna(0)
+    mult = pd.Series(1.0, index=df.index).where(mc < 10e12, 0.6).where(mc >= 1e12, 1.4)
+    floor = cfg.min_change_pct * mult
+    df = df.assign(등락률문턱=floor)[lambda d: d["등락률"] >= d["등락률문턱"]]
     if cfg.max_change_pct is not None:
         df = df[df["등락률"] <= cfg.max_change_pct]
 
-    # 주도주 후보 정렬: 등락률 우선, 동률이면 거래대금
-    df = df.sort_values(["등락률", "거래대금"], ascending=False)
+    # 정렬·점수 비교는 '문턱 대비 배율' — 대형 +3.6%(문턱3)와 중형 +6%(문턱5)를 같은 잣대로
+    df = df.assign(등락률배=(df["등락률"] / df["등락률문턱"]).round(2))
+    df = df.sort_values(["등락률배", "거래대금"], ascending=False)
 
-    out = df[["종목명", "종가", "등락률", "거래대금"]].copy()
+    out = df[["종목명", "종가", "등락률", "등락률배", "거래대금", "시가총액"]].copy()
     out["거래대금(억)"] = (out["거래대금"] / EOK).round(0).astype("int64")
-    out = out.drop(columns="거래대금").reset_index()  # 종목코드를 컬럼으로
+    out["시가총액(조)"] = (out["시가총액"] / 1e12).round(1)
+    out = out.drop(columns=["거래대금", "시가총액"]).reset_index()  # 종목코드를 컬럼으로
     out.insert(0, "순위", range(1, len(out) + 1))
-    out = out[["순위", "종목코드", "종목명", "종가", "등락률", "거래대금(억)"]]
+    out = out[["순위", "종목코드", "종목명", "종가", "등락률", "등락률배",
+               "거래대금(억)", "시가총액(조)"]]
     return date, out

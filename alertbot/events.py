@@ -717,9 +717,11 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
     결국 아무도 안 읽는다 — 없는 것과 같아진다. 수집은 그대로 하고 표시만 좁힌다.
     """
     now = now or datetime.now(KST)
-    # 발표 완료는 변동폭 창이 아니라 최근 24시간으로 본다. 창(예: 08:00~14:30)만
-    # 보면 전날 밤 미국 지표가 통째로 빠지는데, 그게 한국 개장의 주된 근거다.
-    done_raw = [e for e in events if now - timedelta(hours=24) <= e["when"] <= now]
+    # 발표 완료 = 시황과 동일한 창(앵커 15:30 → 지금). 24시간 고정이면 주말 발표
+    # (토요일 이슈)가 월요일 아침 브리핑에서 빠진다 — 창 기준이면 금 15:30 이후
+    # 전부 포함된다. 저녁 슬롯(당일 15:30~)에선 이미 장에 반영된 아침 지표가
+    # 자연스럽게 빠진다. (09-14 사용자)
+    done_raw = [e for e in events if win["start"] <= e["when"] <= now]
     _, ahead_raw = split(events, win["start"], win["end"], now)
     open_at = _next_open(now)
     try:
@@ -738,9 +740,8 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
             continue          # 수치도 메모도 없으면 브리핑에 담을 내용이 없다
         # 창 안의 발표만 시황 등락률과 나란히 둔다. 20시간 전 지표를 오늘 창의
         # 등락률과 연결하면 인과처럼 보이지만 근거가 없다.
-        in_win = win["start"] <= e["when"] <= win["end"]
-        assets = link_assets(e, quote_rows) if in_win else []
-        if e.get("src") == "us_earnings" and e.get("sym") and in_win:
+        assets = link_assets(e, quote_rows)   # done_raw 가 이미 창 기준이라 전부 연결
+        if e.get("src") == "us_earnings" and e.get("sym"):
             # 개별 실적의 반응은 지수가 아니라 그 종목이 본체다 — 나스닥 + 해당 종목만
             assets = [a for a in assets if a[0] == "나스닥"]
             m = _stock_react(e["sym"], e["when"], now)
@@ -797,6 +798,7 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
     ahead.sort(key=lambda a: a["when"])            # 표시는 다시 시간순
 
     return {"done": done, "ahead": ahead, "n_done": len(done_raw),
+            "done_label": f"{win['start']:%m/%d %H:%M} 이후",
             "open_at": open_at, "win": (win["start"], win["end"])}
 
 

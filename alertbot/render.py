@@ -53,9 +53,66 @@ def _pad(s: str, width: int, align: str = "l") -> str:
     return s + " " * gap
 
 
+def section_summary(win, fl=None, cmp=None, events=None, kr_upjong=None,
+                    us_movers=None, kr_impact=None):
+    """맨 윗줄 요약 — 아래 데이터들을 종가베팅 관점으로 압축 (09-15 사용자).
+
+    규칙 기반: ★2개 이상 이례 변동 / 수급 ⚡ / 거래대금 수위 / 주도 섹터 /
+    미국 특이종목 / 다음 시가 전 최상위 이벤트. 소재 없으면 줄 생략."""
+    cmp = cmp or {}
+    bits = []
+
+    big = [r for r in (win.get("rows") or []) if (r.get("stars") or 0) >= 2]
+    big += [r for r in (win.get("key_stocks") or []) if (r.get("stars") or 0) >= 2]
+    big.sort(key=lambda r: (-(r.get("stars") or 0), -abs(r.get("chg_pct") or 0)))
+    if big:
+        seg = " · ".join(f"{esc(r['name'])} {r['chg_pct']:+.1f}%{'★' * r['stars']}"
+                         for r in big[:3])
+        bits.append(f"변동: {seg}")
+
+    fs = []
+    for key, name in (("foreign", "외국인"), ("inst", "기관"), ("nonarb", "비차익")):
+        c = cmp.get(key)
+        z = (c or {}).get("z")
+        if z is None or abs(z) < 1.2:
+            continue
+        stars = "★" * (3 if abs(z) >= 2.0 else 2 if abs(z) >= 1.5 else 1)
+        fs.append(f"{name} 대량 {'매수' if c['today'] > c.get('avg_long', 0) else '매도'}{stars}")
+    a = (cmp.get("amount") or (fl or {}).get("ref") or {})
+    p = a.get("pct_short")
+    if p is not None and abs(p) >= 15:
+        fs.append(f"거래대금 평소 {p:+.0f}%")
+    if fs:
+        bits.append("수급: " + " · ".join(fs))
+
+    up = (kr_upjong or {}).get("up") or []
+    if up:
+        x = up[0]
+        bits.append(f"주도: {esc(x['name'])} {x['change_pct']:+.1f}%")
+
+    if us_movers:
+        m = us_movers[0]
+        bits.append(f"미국: {esc(m['sym'])} 독주 {m['pct']:+.1f}% (지수 {m['base']:+.1f}%)")
+    elif kr_impact:
+        im = kr_impact[0]
+        d = im.get("direction")
+        tag = " 상승" if d == "up" else (" 하락" if d == "down" else "")
+        bits.append(f"미국발: {esc(im['kr_sector'])}{tag} 예상")
+
+    ov = [x for x in (events or {}).get("ahead") or [] if x.get("overnight")]
+    if ov:
+        x = ov[0]
+        flag, _, nm = (x["label"] or "").partition(" ")
+        bits.append(f"다음 시가 전: {flag} {esc(nm)} ({x['when']:%H:%M})")
+
+    if not bits:
+        return ""
+    return "\n🧭 <b>요약</b>\n" + "\n".join(f"  · {b}" for b in bits)
+
+
 def section_quotes(win):
-    """시황 — 본장 시세, 괄호는 퍼프 창변동%(제목에 Perp. 명시). ★=1% 이상."""
-    lines = ["\n📊 <b>시황</b> <i>(Perp.)</i>"]
+    """시황 — 가격 뒤 괄호에 (본장%, 퍼프%) 병기. 둘 다 15:30 앵커(09-14 사용자)."""
+    lines = ["\n📊 <b>시황</b> <i>(본장 / Perp)</i>"]
     for r in win["rows"]:
         if r["chg_pct"] is None:
             lines.append(f"  {esc(r['name'])} — 데이터 없음")
@@ -65,15 +122,14 @@ def section_quotes(win):
         px = _fmt_px(r['end_px'], r['decimals'])
         if r.get("kind") == "yield":
             px += "%"                     # 금리는 수치 자체가 %
+        lab = esc(r.get("chg_label") or "")
         if r.get("perp_pct") is not None:
-            tag = f" <i>({r['perp_pct']:+.2f}%)</i>"
+            body = f"<b>({lab} / {r['perp_pct']:+.2f}%)</b>"
         elif r.get("proxy"):
-            tag = f" <i>({esc(r['proxy'])})</i>"
+            body = f"<b>({lab})</b> <i>({esc(r['proxy'])})</i>"
         else:
-            tag = ""
-        # 가격 등락률 (퍼프%)★ — Perp. 표기는 섹션 제목에 한 번만 (09-11 사용자 포맷)
-        lines.append(f"  {sign} <b>{esc(r['name'])}</b> {px} "
-                     f"<b>{esc(r.get('chg_label') or '')}</b>{tag}{star}")
+            body = f"<b>({lab})</b>"      # 본장 단독도 괄호로 통일 (09-15)
+        lines.append(f"  {sign} <b>{esc(r['name'])}</b> {px} {body}{star}")
     return "\n".join(lines)
 
 
@@ -85,23 +141,23 @@ def section_key_stocks(win):
     rows = win.get("key_stocks") or []
     if not rows:
         return ""
-    lines = ["\n📌 <b>주요 종목</b> <i>(Perp.)</i>"]
+    lines = ["\n📌 <b>주요 종목</b> <i>(본장 / Perp)</i>"]
     for r in rows:
         if r.get("chg_pct") is None:
             lines.append(f"  {esc(r['name'])} — 데이터 없음")
             continue
         star = "★" * r.get("stars", 1 if r["significant"] else 0)
         sign = "🔺" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
+        lab = esc(r.get("chg_label") or "")
         if r.get("perp_pct") is not None:
-            # 앵커가 15:30(KRX 마감)이라 이 퍼프 % = '마감 이후 변동' = 괴리율 프록시
-            tag = f" <i>({r['perp_pct']:+.2f}%)</i>"
+            # 퍼프 % 는 15:30 앵커 창 변동 = '마감 이후' 괴리 프록시
+            body = f"<b>({lab} / {r['perp_pct']:+.2f}%)</b>"
         elif r.get("proxy"):
-            tag = " <i>(perp)</i>"
+            body = f"<b>({lab})</b> <i>(perp)</i>"
         else:
-            tag = ""
+            body = f"<b>({lab})</b>"
         lines.append(f"  {sign} <b>{esc(r['name'])}</b> "
-                     f"{_fmt_px(r['end_px'], r.get('decimals', 0))} "
-                     f"<b>{esc(r.get('chg_label') or '')}</b>{tag}{star}")
+                     f"{_fmt_px(r['end_px'], r.get('decimals', 0))} {body}{star}")
     return "\n".join(lines)
 
 
@@ -242,7 +298,7 @@ def section_events_done(ev):
     done = (ev or {}).get("done") or []
     if not done:
         return ""
-    lines = ["\n🗓 <b>발표 완료</b> <i>(24시간)</i>"]
+    lines = ["\n🗓 <b>발표 완료</b>"]
     for d in done:
         v = f" : {esc(d['verdict'])}" if d.get("verdict") else ""
         # 국기를 맨 앞으로 (label 은 '🇺🇸 이름' 형태 — 첫 토큰이 항상 국기)
@@ -269,12 +325,11 @@ def section_events_ahead(ev):
     ahead = (ev or {}).get("ahead") or []
     if not ahead:
         return ""
-    lines = ["\n⏳ <b>예정</b> <i>(⚠️ 는 다음 시가 전)</i>"]
+    lines = ["\n⏳ <b>발표 예정</b>"]
     for a in ahead:
-        mark = "⚠️ " if a.get("overnight") else ""
         v = f" {esc(a['value'])}" if a.get("value") else ""
         flag, _, nm = (a["label"] or "").partition(" ")
-        lines.append(f"  {flag} {mark}{a['when']:%m-%d %H:%M} <b>{esc(nm)}</b>{v}")
+        lines.append(f"  {flag} {a['when']:%m-%d %H:%M} <b>{esc(nm)}</b>{v}")
         if a.get("stat"):
             lines.append(f"      <i>{esc(a['stat'])}</i>")
         if a.get("note"):
@@ -294,6 +349,8 @@ def section_leaders(ld, title="🎯 <b>주도주</b>"):
             seg += f" / {amt:,.0f}억"
         if r.get("섹터"):
             seg += f" / <i>{esc(r['섹터'])}</i>"
+        if r.get("주도일수") is not None:  # 연속성 태그 — 반짝 vs 지속 주도 구분 (09-15)
+            seg += f" · <i>주도 {r['주도일수']:.0f}/20일</i>"
         lines.append(seg)
         # 거래원별 순매수 서브라인은 09-11 제거 — 변동률·거래대금만 (수급은 점수에만 반영)
     return "\n".join(lines)
@@ -315,12 +372,16 @@ def _flow_table(groups):
     unit = "조원" if use_jo else "억원"
     fmt = (lambda v: f"{v/1e4:+.1f}") if use_jo else (lambda v: f"{v:+,.0f}")
 
-    out = [f"  <i>{esc(' / '.join(g[0] for g in groups))}</i>"]
-    for k in KEYS:
+    # 우측정렬(09-15): 열별 최대 폭에 맞춰 숫자 왼쪽을 숫자폭 공백(U+2007)으로 채운다
+    # — 비례 폰트에서도 숫자와 같은 폭이라 자릿수가 달라도 오른쪽 끝이 맞는다.
+    rows_v = [[("-" if (acc or {}).get(k) is None else fmt(acc[k])) for _, acc in groups]
+              for k in KEYS]
+    w = [max(len(r[i]) for r in rows_v) for i in range(len(groups))]
+    out = []
+    for k, vals in zip(KEYS, rows_v):
         if k == "비차익":                  # 투자자별과 별개 집계(프로그램) — 선으로 분리
             out.append("   ────────────")
-        cells = " / ".join(("-" if (acc or {}).get(k) is None else fmt(acc[k]))
-                           for _, acc in groups)
+        cells = " / ".join(" " * (w[i] - len(c)) + c for i, c in enumerate(vals))
         pad = "　" * (4 - len(k))          # 전각 패딩 — 비례 폰트에서도 폭 일정
         out.append(f"  · {esc(k)}{pad} <b>{esc(cells)}</b>")
     return "\n".join(out), unit
@@ -400,24 +461,27 @@ def section_flows(fl, cmp=None):
 
     groups = [(title, merged(names)) for title, names in FLOW_GROUPS]
     if any(g[1] for g in groups):
-        fsrc = "KRX+NXT" if fl.get("flow_src") == "kiwoom" else "네이버 KRX"
         tbl, unit = _flow_table(groups)
         asof2 = f" · {esc(asof)}" if asof else ""
-        lines.append(f"\n💵 <b>순매수</b> <i>({esc(unit)} · {esc(fsrc)}{asof2})</i>")
+        markets = "/".join(t for t, _ in FLOW_GROUPS)
+        lines.append(f"\n💵 <b>순매수</b> <i>({esc(markets)} · {esc(unit)}{asof2})</i>")
         lines.append(tbl)
 
+        # ⚡ 별 사다리는 시황과 동일: z 1.2★ / 1.5★★ / 2.0★★★ (09-15 사용자)
         note = []
         for key, name in (("foreign", "외국인"), ("inst", "기관"),
                           ("indiv", "개인"), ("etc", "기타법인"),
                           ("nonarb", "비차익")):
             c = cmp.get(key)
-            if not c or c.get("z") is None or abs(c["z"]) < 1.0:
+            z = (c or {}).get("z")
+            if z is None or abs(z) < 1.2:
                 continue
+            stars = "★" * (3 if abs(z) >= 2.0 else 2 if abs(z) >= 1.5 else 1)
             verb = "대량 순매수" if c["today"] > c.get("avg_long", 0) else "대량 순매도"
-            note.append(f"  ⚡ {esc(name)} <i>({c['z']:+.1f}σ {verb})</i>")
+            note.append(f"  ⚡ {esc(name)} {verb}{stars}")
         if note:
+            lines.append("")              # 표와 한 줄 띄움 (사용자 포맷)
             lines += note
-            lines.append(f"    · <i>코스피+선물 {cmp.get('n_long', 0)}일 기준</i>")
 
     return "\n".join(lines)
 
@@ -426,7 +490,10 @@ def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
           flows=None, flows_cmp=None, kr_upjong=None, kr_themes=None, kr_when=None,
           us_leaders=None, events=None, nxt_pm=None, us_movers=None, footer=None):
     parts = [header(win)]
-    for s in (section_events_done(events),        # 오늘 나온 근거를 먼저
+    for s in (section_summary(win, flows, flows_cmp, events, kr_upjong,
+                              us_movers, kr_impact),
+              section_events_ahead(events),       # 발표 예정을 맨 위로 (09-15 사용자)
+              section_events_done(events),
               section_quotes(win),
               section_key_stocks(win),
               section_quote_news(win, news),
@@ -437,7 +504,6 @@ def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
               section_us_sectors(us_sectors or [], us_leaders),
               section_us_movers(us_movers),
               section_kr_impact(kr_impact or []),
-              section_events_ahead(events),      # 오버나이트 노출은 맨 끝에
               ):
         if s:
             parts.append(s)

@@ -28,8 +28,13 @@ def _load_keys():
              "/opt/upbit_bot/.env")
 
 
-def fetch_leaders(top: int = 8, min_change: float = 2.0, use_kiwoom: bool = True):
-    """[{종목명, 종목코드, 등락률, 거래대금, 외국인, 기관, 프로그램, 점수}] 또는 None."""
+def fetch_leaders(top: int = 5, min_change: float = 2.0, use_kiwoom: bool = True):
+    """[{종목명, 종목코드, 등락률, 거래대금, 주도일수, 점수, ...}] 또는 None.
+
+    상위 5개(09-15 사용자: 최종 고민은 이 안에서만). 선정은 3요소 스크리너
+    (시총구간 배율 — 백테스트 +1.13%/일 승률 65%로 최강 룰) + 수급 점수 유지,
+    연속성(주도일수)은 선정이 아니라 태그로만 붙인다 — 연속성만으로 뽑으면
+    삼전·하이닉스 고정 바스켓이 되어 엣지가 흐려짐(09-15 백테스트 B안 기각)."""
     _load_keys()
     try:
         from closebet.config import Settings
@@ -67,14 +72,50 @@ def fetch_leaders(top: int = 8, min_change: float = 2.0, use_kiwoom: bool = True
         out.append({
             "종목명": r.get("종목명"), "종목코드": r.get("종목코드"),
             "등락률": _f(r.get("등락률")), "거래대금": _f(r.get("거래대금(억)")),
+            "시가총액조": _f(r.get("시가총액(조)")),
             "외국인주": _f(r.get("외국인순매매")), "기관주": _f(r.get("기관순매매")),
             "외국인": None, "기관": None,
             "프로그램": _f(r.get("프로그램순매수(억)")), "점수": _f(r.get("점수")),
         })
 
-    # (09-11) 수급 금액 재조회 제거 — 표시에서 거래원별 순매수를 빼기로 해서
-    # 종목당 ka10059 추가 호출(8콜)이 불필요해졌다. 수급은 점수 계산에만 쓰인다.
+    # 연속성 태그(09-15): 최근 20일 중 시총구간 문턱을 넘은 '주도일' 수 —
+    # ka10059 한 콜(일별 flu_rt, %×100 주의)로 계산. 선정에는 쓰지 않는다.
+    if src == "kiwoom":
+        try:
+            import time
+            from closebet.kiwoom import KiwoomClient
+            kc = KiwoomClient()
+            for x in out:
+                x["주도일수"] = _lead_days(kc, x["종목코드"], x.get("시가총액조"), date)
+                time.sleep(0.2)
+        except Exception as e:
+            print(f"  주도일수 계산 실패(태그 생략): {type(e).__name__}: {str(e)[:80]}")
+
     return {"date": date, "source": src, "rows": out}
+
+
+def _lead_days(kc, code: str, mc_jo, date: str, days: int = 20):
+    """최근 days 거래일 중 '시총구간 등락률 문턱(10조↑3%/1~10조 5%/1조↓7%)'을
+    넘은 날 수. 연속성 표시용 — 삼전닉스류(수십일)와 반짝 테마주를 구분해 준다."""
+    tier = 3.0 if (mc_jo or 0) >= 10 else (5.0 if (mc_jo or 0) >= 1 else 7.0)
+    try:
+        d, _ = kc.request("ka10059",
+                          {"dt": date, "stk_cd": code, "amt_qty_tp": "1",
+                           "trde_tp": "0", "unit_tp": "1"},
+                          endpoint="/api/dostk/stkinfo")
+        rows = sorted((r for r in d.get("stk_invsr_orgn") or []),
+                      key=lambda r: r.get("dt") or "", reverse=True)[:days]
+        n = 0
+        for r in rows:
+            try:
+                chg = float(str(r.get("flu_rt")).replace(",", "").lstrip("+")) / 100.0
+            except (TypeError, ValueError):
+                continue
+            if chg >= tier:
+                n += 1
+        return n
+    except Exception:
+        return None
 
 
 def _f(v):

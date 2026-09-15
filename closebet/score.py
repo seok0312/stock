@@ -39,6 +39,10 @@ def _minmax(s: pd.Series) -> pd.Series:
 def _score(df: pd.DataFrame, weights: dict) -> pd.Series:
     total = pd.Series(0.0, index=df.index)
     for col, wkey in _WEIGHT_COL.items():
+        # 등락률은 시총구간 문턱 대비 배율(등락률배)이 있으면 그걸로 잰다 (09-15) —
+        # 대형주 +3.6%(문턱 3)와 중형주 +6%(문턱 5)가 같은 점수 눈금에 선다.
+        if col == "등락률" and "등락률배" in df.columns:
+            col = "등락률배"
         w = weights.get(wkey, 0.0)
         if col not in df.columns or not w:
             continue

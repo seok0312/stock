@@ -349,6 +349,46 @@ def _last_confirmed(url) -> tuple:
     return None, None
 
 
+_ANCHOR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "data", "main_anchor.json")
+
+
+def save_main_anchor(now=None) -> dict:
+    """15:30 시점 본장가 스냅샷 (1530 슬롯이 저장).
+
+    오일·금은 본장이 사실상 24시간이라 '전일比'의 기준시각이 미국 정산가(새벽 5시)다
+    → 퍼프(15:30 앵커)와 장중 변동폭이 어긋난다(09-14 사용자 발견). 이 스냅샷을
+    앵커로 본장 %를 재계산해 두 숫자를 같은 잣대로 만든다."""
+    now = now or datetime.now(KST)
+    prices = {}
+    for spec in DISPLAY:
+        if spec.get("main"):
+            px, _ = _main_quote(spec["main"])
+            if px:
+                prices[spec["name"]] = px
+    try:
+        with open(_ANCHOR_PATH, encoding="utf-8") as f:
+            doc = json.load(f)
+    except Exception:
+        doc = {}
+    doc[now.strftime("%Y%m%d")] = prices
+    for k in sorted(doc)[:-10]:
+        doc.pop(k, None)
+    os.makedirs(os.path.dirname(_ANCHOR_PATH), exist_ok=True)
+    with open(_ANCHOR_PATH, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False)
+    return prices
+
+
+def _anchor_px(name, d):
+    try:
+        with open(_ANCHOR_PATH, encoding="utf-8") as f:
+            doc = json.load(f)
+    except Exception:
+        return None
+    return (doc.get(d.strftime("%Y%m%d")) or {}).get(name)
+
+
 def _attach_main(row, px, chg):
     """퍼프 창 변동을 괄호(perp_pct)로 밀고 본장 시세를 앞세운다.
     화살표·★ 판정(chg_pct)은 밤사이 감지 목적에 맞게 퍼프 쪽을 유지한다."""
@@ -372,7 +412,15 @@ def _row_kr(spec, start, end, ex):
         if d:
             c, ratio = _num(d.get("closePrice")), _num(d.get("fluctuationsRatio"))
             if c is not None and ratio is not None:
-                return {"end_px": c, "chg_pct": ratio, "decimals": spec["dp"]}
+                # 장중에도 EWY 퍼프를 괄호로 병기(09-15 사용자) — 화살표·★은 본장 기준 유지
+                row = {"end_px": c, "chg_pct": ratio, "decimals": spec["dp"],
+                       "idx_star": True}
+                if spec.get("sym"):
+                    rp = _row_perp(spec, start, end, ex)
+                    if rp.get("chg_pct") is not None:
+                        row["perp_pct"] = rp["chg_pct"]
+                        row["chg_label"] = f"{ratio:+.2f}%"
+                return row
     # 장외: 본장 마지막 확정(전일 종가·전일比)을 앞세우고, 코스피는 EWY 퍼프를 괄호로
     px, ch = _last_confirmed(INDEX_DAILY.format(code=spec["index"]))
     if spec.get("sym"):
@@ -468,6 +516,12 @@ def fetch_window(slot: str, now: datetime | None = None):
             if spec.get("main"):
                 px, ch = _main_quote(spec["main"])
                 _attach_main(row, px, ch)
+                # 오일·금(24시간 본장)은 전일比 대신 15:30 앵커 스냅샷 기준으로 재계산
+                # → 퍼프와 같은 잣대. 스냅샷 없으면(주말 직후 등) 전일比 유지.
+                if spec["main"][0] == "mkidx" and px:
+                    ap = _anchor_px(spec["name"], start.date())
+                    if ap:
+                        row["chg_label"] = f"{(px / ap - 1) * 100:+.2f}%"
         elif spec["src"] == "kr":
             row = _row_kr(spec, start, end, ex)
         elif spec["src"] == "bond":
@@ -488,7 +542,9 @@ def fetch_window(slot: str, now: datetime | None = None):
             if not row.get("chg_label"):          # 본장 라벨(_attach_main)이 있으면 유지
                 row["chg_label"] = f"{c:+.2f}%" if c is not None else None
             # ★ 기준(chg_pct)이 퍼프 창 변동이면 퍼프 σ + 창 길이 스케일, 아니면 지수 σ
-            if spec["src"] == "perp" or row.get("perp_pct") is not None or row.get("proxy"):
+            if row.get("idx_star"):       # 장중 코스피(본장 등락률이 기준) — 지수 σ
+                row["stars"] = _star_level(c, _sigma_index(spec["index"]))
+            elif spec["src"] == "perp" or row.get("perp_pct") is not None or row.get("proxy"):
                 row["stars"] = _star_level(c, _sigma_perp(spec.get("sym"), ex), hours)
             else:
                 row["stars"] = _star_level(c, _sigma_index(spec["index"]))

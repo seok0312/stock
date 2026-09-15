@@ -282,10 +282,12 @@ def main(argv=None):
                        flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집")
     notify.send(msg, dry_run=args.dry_run)
-    if slot == "1530" and fl and not args.dry_run:
+    if slot == "1530" and not args.dry_run:
         try:
-            import flows as _flm
-            _flm.save_close_ref(fl, now)      # 16:30 대조 기준점
+            if fl:
+                import flows as _flm
+                _flm.save_close_ref(fl, now)  # 16:30 대조 기준점
+            quotes.save_main_anchor(now)      # 오일·금 본장 15:30 앵커 스냅샷
         except Exception as e:
             print(f"  1530 기준점 저장 실패: {type(e).__name__}: {e}")
 
