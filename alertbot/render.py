@@ -37,6 +37,25 @@ def _link(it, cut=90):
     return f"<a href=\"{it.get('url','')}\">{t}</a>"
 
 
+def _justify_label(s: str, n: int = 4, fill: str = "ㅤ") -> str:
+    """라벨을 n칸에 '양쪽 정렬' — 채움을 글자 사이에 고르게 분산 (09-16 사용자).
+
+    개인 → 개ㅤㅤ인 / 외국인 → 외ㅤ국인 / 기타법인 → 그대로.
+    꼬리 패딩보다 시각적으로 안정적이고, 채움문자 폭이 폰트마다 조금 달라도
+    오차가 가운데로 분산돼 끝단이 덜 어긋난다."""
+    gap = n - len(s)
+    if gap <= 0 or len(s) <= 1:
+        return s + fill * max(0, gap)
+    slots = len(s) - 1
+    base, extra = divmod(gap, slots)
+    out = []
+    for i, ch in enumerate(s):
+        out.append(ch)
+        if i < slots:
+            out.append(fill * (base + (1 if i < extra else 0)))
+    return "".join(out)
+
+
 # ── 표 정렬 유틸 ────────────────────────────────────────────────
 def _dw(s: str) -> int:
     """표시 폭. 한글·CJK는 2칸으로 센다(<pre> 고정폭 정렬용)."""
@@ -53,15 +72,47 @@ def _pad(s: str, width: int, align: str = "l") -> str:
     return s + " " * gap
 
 
+# 종가베팅 신호 점수 v2 (09-16 데이터 적합 — 61일, 타깃=후보군 종가→익일시가 평균).
+# 항목별 IC 와 표준화 β 에 비례한 정수 가중치. 규칙은 여기 한 곳에만.
+#   EWY 퍼프 창변동  IC+0.64 β+1.54 → ±0.3% 에 ±2, ±1.0% 에 ±3  (최강 신호)
+#   거래대금 수위     IC+0.32 β+0.98 → 평소 ±15% 에 ±2
+#   QQQ 퍼프 창변동  IC+0.60 β+0.52 → ±0.5% 에 ±1 (EWY 와 공선이라 소폭만)
+#   오버나이트 발표   이벤트밤 평균 +0.46% vs 없는 밤 +1.80% → -1, 금리/FOMC -2
+#   수급 대량 매수/매도 ±1 — 시계열 미검증(같은시각 표본 부족), v1 유지
+#   탈락: 코스피 본장 등락(IC+0.08, EWY 통제 시 잉여) · 오일(-0.16) · 금 · BTC
+_SIG_LABEL = ((3, "우호"), (1, "약우호"), (0, "중립"), (-2, "신중"), (-99, "관망"))
+
+
+def _perp_of(row):
+    """행의 퍼프 창변동 % — perp_pct 가 없으면(본장 조회 실패로 chg_pct 가 퍼프인
+    경우) chg_pct 로 폴백. 장중 지수행(idx_star, chg_pct=본장)은 None."""
+    if row is None:
+        return None
+    if row.get("perp_pct") is not None:
+        return row["perp_pct"]
+    return None if row.get("idx_star") else row.get("chg_pct")
+
+
 def section_summary(win, fl=None, cmp=None, events=None, kr_upjong=None,
                     us_movers=None, kr_impact=None):
-    """맨 윗줄 요약 — 아래 데이터들을 종가베팅 관점으로 압축 (09-15 사용자).
+    """맨 윗줄 요약 — 본문 섹션 순서(발표→시황→거래대금→수급→주도→미국)대로 압축.
 
-    규칙 기반: ★2개 이상 이례 변동 / 수급 ⚡ / 거래대금 수위 / 주도 섹터 /
-    미국 특이종목 / 다음 시가 전 최상위 이벤트. 소재 없으면 줄 생략."""
+    첫 줄은 종가베팅 신호 점수(규칙은 위 주석). 소재 없으면 그 줄 생략."""
     cmp = cmp or {}
     bits = []
+    score = 0
 
+    # 1) 발표 — 다음 시가 전 오버나이트 이벤트
+    ov = [x for x in (events or {}).get("ahead") or [] if x.get("overnight")]
+    if ov:
+        x = ov[0]
+        flag, _, nm = (x["label"] or "").partition(" ")
+        bits.append(f"다음 시가 전: {flag} {esc(nm)} ({x['when']:%H:%M})")
+        # 감점은 그 밤 이벤트 전체 중 최고 강도로 (첫 줄이 소매판매여도 FOMC 가 겹치면 -2)
+        score -= 2 if any(w in (e["label"] or "") for e in ov
+                          for w in ("금리", "FOMC")) else 1
+
+    # 2) 시황·주요종목 — ★2개 이상 이례 변동 + 지수 방향
     big = [r for r in (win.get("rows") or []) if (r.get("stars") or 0) >= 2]
     big += [r for r in (win.get("key_stocks") or []) if (r.get("stars") or 0) >= 2]
     big.sort(key=lambda r: (-(r.get("stars") or 0), -abs(r.get("chg_pct") or 0)))
@@ -69,45 +120,81 @@ def section_summary(win, fl=None, cmp=None, events=None, kr_upjong=None,
         seg = " · ".join(f"{esc(r['name'])} {r['chg_pct']:+.1f}%{'★' * r['stars']}"
                          for r in big[:3])
         bits.append(f"변동: {seg}")
+    # EWY 퍼프(주 신호) + QQQ 퍼프 — 창 기준, v2 가중치
+    ewy = _perp_of(next((r for r in win.get("rows") or [] if r["name"] == "코스피"), None))
+    if ewy is not None:
+        score += (3 if ewy >= 1.0 else 2 if ewy >= 0.3 else 0) \
+            - (3 if ewy <= -1.0 else 2 if ewy <= -0.3 else 0)
+    qqq = _perp_of(next((r for r in win.get("rows") or [] if r["name"] == "나스닥"), None))
+    if qqq is not None:
+        score += 1 if qqq >= 0.5 else (-1 if qqq <= -0.5 else 0)
 
+    # 3) 거래대금
+    a = (cmp.get("amount") or (fl or {}).get("ref") or {})
+    p = a.get("pct_short")
+    if p is not None:
+        bits.append(f"거래대금 평소 {p:+.0f}%")
+        score += 2 if p >= 15 else (-2 if p <= -15 else 0)
+
+    # 4) 수급
     fs = []
     for key, name in (("foreign", "외국인"), ("inst", "기관"), ("nonarb", "비차익")):
         c = cmp.get(key)
         z = (c or {}).get("z")
         if z is None or abs(z) < 1.2:
             continue
+        buy = c["today"] > c.get("avg_long", 0)
         stars = "★" * (3 if abs(z) >= 2.0 else 2 if abs(z) >= 1.5 else 1)
-        fs.append(f"{name} 대량 {'매수' if c['today'] > c.get('avg_long', 0) else '매도'}{stars}")
-    a = (cmp.get("amount") or (fl or {}).get("ref") or {})
-    p = a.get("pct_short")
-    if p is not None and abs(p) >= 15:
-        fs.append(f"거래대금 평소 {p:+.0f}%")
+        fs.append(f"{name} 대량 {'매수' if buy else '매도'}{stars}")
+        if key in ("foreign", "inst"):
+            score += 1 if buy else -1
     if fs:
         bits.append("수급: " + " · ".join(fs))
 
+    # 5) 주도 섹터
     up = (kr_upjong or {}).get("up") or []
     if up:
         x = up[0]
         bits.append(f"주도: {esc(x['name'])} {x['change_pct']:+.1f}%")
 
+    # 6) 미국 특이종목 / 한국 영향
     if us_movers:
         m = us_movers[0]
         bits.append(f"미국: {esc(m['sym'])} 독주 {m['pct']:+.1f}% (지수 {m['base']:+.1f}%)")
+        if m["pct"] < 0:
+            score -= 1
     elif kr_impact:
         im = kr_impact[0]
         d = im.get("direction")
         tag = " 상승" if d == "up" else (" 하락" if d == "down" else "")
         bits.append(f"미국발: {esc(im['kr_sector'])}{tag} 예상")
 
-    ov = [x for x in (events or {}).get("ahead") or [] if x.get("overnight")]
-    if ov:
-        x = ov[0]
-        flag, _, nm = (x["label"] or "").partition(" ")
-        bits.append(f"다음 시가 전: {flag} {esc(nm)} ({x['when']:%H:%M})")
+    # 진입 타이밍 (1430/1900 전용, 09-16 퍼프 30분봉 68일 실측):
+    # 마감 전 구간은 '되돌림'이 지배 — 흐름 강세(+0.3%↑)면 마감까지 평균 -0.2~-0.3%p
+    # 반납(먼저 매수 손해), 중립(±0.3%)일 때만 마감 앞 상승(+0.26~+0.36%p, 밤 승률 81%).
+    # 약세는 낮엔 지속(대기), 밤엔 반등 경향(매수 무방).
+    timing = None
+    slot = win.get("slot")
+    if slot in ("1430", "1900"):
+        kr_row = next((r for r in win.get("rows") or [] if r["name"] == "코스피"), None)
+        f = (kr_row or {}).get("chg_pct")
+        if f is not None:
+            if slot == "1430":
+                timing = ("지금 매수 우위 — 중립 흐름은 마감 앞 상승 경향" if abs(f) < 0.3
+                          else "15:20 대기 — 강세 흐름은 마감 전 되돌림" if f >= 0.3
+                          else "대기/관망 — 약세 흐름은 마감까지 지속 경향")
+            else:
+                timing = ("지금 매수 우위 — 중립 흐름 (실측 승률 81%)" if abs(f) < 0.3
+                          else "20시 근처 대기 — 강세 흐름은 되돌림 경향" if f >= 0.3
+                          else "지금 매수 무방 — 약세는 막판 반등 경향")
 
     if not bits:
         return ""
-    return "\n🧭 <b>요약</b>\n" + "\n".join(f"  · {b}" for b in bits)
+    lab = next(l for th, l in _SIG_LABEL if score >= th)
+    head = [f"  · <b>종가베팅 신호: {score:+d} ({lab})</b>"]
+    if timing:
+        head.append(f"  · <b>타이밍: {esc(timing)}</b>")
+    return "\n🧭 <b>요약</b>\n" + "\n".join(head + [f"  · {b}" for b in bits])
 
 
 def section_quotes(win):
@@ -382,8 +469,7 @@ def _flow_table(groups):
         if k == "비차익":                  # 투자자별과 별개 집계(프로그램) — 선으로 분리
             out.append("   ────────────")
         cells = " / ".join(" " * (w[i] - len(c)) + c for i, c in enumerate(vals))
-        pad = "　" * (4 - len(k))          # 전각 패딩 — 비례 폰트에서도 폭 일정
-        out.append(f"  · {esc(k)}{pad} <b>{esc(cells)}</b>")
+        out.append(f"  · {esc(_justify_label(k, 4))} <b>{esc(cells)}</b>")
     return "\n".join(out), unit
 
 
@@ -429,8 +515,7 @@ def section_flows(fl, cmp=None):
         n_amt += 1
         amt = (m.get("amount_won") or 0) / 1e12
         d = per_slot.get(lab) or per_day.get(lab) or {}
-        pad = "　" * (3 - len(lab))   # 선물(2자)도 코스피/코스닥과 금액 열 맞춤
-        lines.append(f"  · <b>{esc(lab)}</b>{pad} {amt:,.0f}조{_pct_tag(d)}")
+        lines.append(f"  · <b>{esc(_justify_label(lab, 3))}</b> {amt:,.0f}조{_pct_tag(d)}")
     for m in fl["rows"]:
         if m.get("error"):
             lines.append(f"  · {esc(m['label'])} — 조회 실패")
@@ -480,8 +565,7 @@ def section_flows(fl, cmp=None):
             verb = "대량 순매수" if c["today"] > c.get("avg_long", 0) else "대량 순매도"
             note.append(f"  ⚡ {esc(name)} {verb}{stars}")
         if note:
-            lines.append("")              # 표와 한 줄 띄움 (사용자 포맷)
-            lines += note
+            lines += note                 # 비차익 바로 아래 붙임 (09-16 사용자)
 
     return "\n".join(lines)
 
