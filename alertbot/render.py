@@ -16,6 +16,19 @@ def _fmt_px(v, dp):
     return f"{v:,.{dp}f}" if v is not None else "—"
 
 
+def _auto_px(v):
+    """가격 소수점 자동 — 값의 1/1000 미만 자리는 생략 (09-17 사용자).
+
+    나스닥 26,000 → 0자리 / 코스닥 817.8 → 1자리 / DRAM 54.80 → 2자리.
+    dp = 값/1000 이하의 가장 큰 10의 거듭제곱 자리."""
+    if v is None:
+        return "—"
+    import math
+    a = abs(v)
+    dp = 0 if a <= 0 else max(0, min(4, -math.floor(math.log10(a / 1000))))
+    return f"{v:,.{dp}f}"
+
+
 def header(win):
     e = win["end"]
     return (f"{ICON[win['slot']]} <b>종가베팅 브리핑</b>\n"
@@ -212,9 +225,10 @@ def section_quotes(win):
             continue
         star = "★" * r.get("stars", 1 if r["significant"] else 0)
         sign = "🔺" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
-        px = _fmt_px(r['end_px'], r['decimals'])
         if r.get("kind") == "yield":
-            px += "%"                     # 금리는 수치 자체가 %
+            px = _fmt_px(r['end_px'], r['decimals']) + "%"   # 금리는 고정 2자리 + %
+        else:
+            px = _auto_px(r['end_px'])    # 값의 1/1000 미만 자리 생략 (09-17)
         lab = esc(r.get("chg_label") or "")
         if r.get("after_pct") is not None:
             body = f"<b>{lab}</b> ({_fmt_after(r['after_pct'])})"
@@ -249,7 +263,7 @@ def section_key_stocks(win):
         else:
             body = f"<b>{lab}</b>"
         lines.append(f"  {sign} <b>{esc(r['name'])}</b> "
-                     f"{_fmt_px(r['end_px'], r.get('decimals', 0))} {body}{star}")
+                     f"{_auto_px(r['end_px'])} {body}{star}")
     return "\n".join(lines)
 
 
