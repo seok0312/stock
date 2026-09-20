@@ -197,9 +197,15 @@ def section_summary(win, fl=None, cmp=None, events=None, kr_upjong=None,
     return "\n🧭 <b>요약</b>\n" + "\n".join(head + [f"  · {b}" for b in bits])
 
 
+def _fmt_after(p):
+    """괄호(마감 후 변동) 라벨 — 장중(정확히 0)은 부호 없이 0.00%."""
+    return "0.00%" if p == 0 else f"{p:+.2f}%"
+
+
 def section_quotes(win):
-    """시황 — 가격 뒤 괄호에 (본장%, 퍼프%) 병기. 둘 다 15:30 앵커(09-14 사용자)."""
-    lines = ["\n📊 <b>시황</b> <i>(본장 / Perp)</i>"]
+    """시황 — 본장 등락률 + 괄호는 본장 '마감 후' 변동만(after).
+    본장이 장중이면 괄호는 항상 0% (09-20 사용자)."""
+    lines = ["\n📊 <b>시황</b> <i>(after)</i>"]
     for r in win["rows"]:
         if r["chg_pct"] is None:
             lines.append(f"  {esc(r['name'])} — 데이터 없음")
@@ -210,12 +216,12 @@ def section_quotes(win):
         if r.get("kind") == "yield":
             px += "%"                     # 금리는 수치 자체가 %
         lab = esc(r.get("chg_label") or "")
-        if r.get("perp_pct") is not None:
-            body = f"<b>({lab} / {r['perp_pct']:+.2f}%)</b>"
+        if r.get("after_pct") is not None:
+            body = f"<b>{lab}</b> ({_fmt_after(r['after_pct'])})"
         elif r.get("proxy"):
-            body = f"<b>({lab})</b> <i>({esc(r['proxy'])})</i>"
+            body = f"<b>{lab}</b> <i>({esc(r['proxy'])})</i>"
         else:
-            body = f"<b>({lab})</b>"      # 본장 단독도 괄호로 통일 (09-15)
+            body = f"<b>{lab}</b>"
         lines.append(f"  {sign} <b>{esc(r['name'])}</b> {px} {body}{star}")
     return "\n".join(lines)
 
@@ -223,12 +229,12 @@ def section_quotes(win):
 def section_key_stocks(win):
     """주요 종목(SK하이닉스·삼성전자) — 시황 바로 다음.
 
-    장중엔 실제 주가(전일比), 장외엔 바이낸스 퍼프로 밤사이 변동을 잰다(perp 표기).
+    본장 시세(전일比) + 괄호는 본장 마감 후 변동만(after). 장중이면 항상 0%.
     """
     rows = win.get("key_stocks") or []
     if not rows:
         return ""
-    lines = ["\n📌 <b>주요 종목</b> <i>(본장 / Perp)</i>"]
+    lines = ["\n📌 <b>주요 종목</b> <i>(after)</i>"]
     for r in rows:
         if r.get("chg_pct") is None:
             lines.append(f"  {esc(r['name'])} — 데이터 없음")
@@ -236,13 +242,12 @@ def section_key_stocks(win):
         star = "★" * r.get("stars", 1 if r["significant"] else 0)
         sign = "🔺" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
         lab = esc(r.get("chg_label") or "")
-        if r.get("perp_pct") is not None:
-            # 퍼프 % 는 15:30 앵커 창 변동 = '마감 이후' 괴리 프록시
-            body = f"<b>({lab} / {r['perp_pct']:+.2f}%)</b>"
+        if r.get("after_pct") is not None:
+            body = f"<b>{lab}</b> ({_fmt_after(r['after_pct'])})"
         elif r.get("proxy"):
-            body = f"<b>({lab})</b> <i>(perp)</i>"
+            body = f"<b>{lab}</b> <i>(perp)</i>"
         else:
-            body = f"<b>({lab})</b>"
+            body = f"<b>{lab}</b>"
         lines.append(f"  {sign} <b>{esc(r['name'])}</b> "
                      f"{_fmt_px(r['end_px'], r.get('decimals', 0))} {body}{star}")
     return "\n".join(lines)

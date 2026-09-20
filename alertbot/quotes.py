@@ -42,7 +42,8 @@ INSTRUMENTS = [
 ]
 
 # 시황에 표시할 행. src: perp=퍼페추얼 / kr=지수(장중)+프록시(장외) / bond=금리
-# main: 본장 시세 소스(09-11 개편) — 표시는 본장 전일比, 괄호에 (Perp. 창변동%).
+# main: 본장 시세 소스(09-11 개편) — 표시는 본장 전일比, 괄호(after_pct)는
+#   본장 '마감 후' 퍼프 변동만. 본장이 장중이면 항상 0 (09-20 사용자).
 #   mkidx = api.stock.naver.com/marketindex/{path} / widx = /index/{code}/basic
 DISPLAY = [
     {"name": "미국10Y",  "src": "bond", "code": "US10YT=RR"},
@@ -57,7 +58,7 @@ DISPLAY = [
     {"name": "비트코인", "src": "perp", "sym": "BTC/USDT:USDT", "dp": 0},
 ]
 
-# 주요 종목 — 시황 다음 카테고리. 본장 시세(전일比) + (Perp. 창변동%).
+# 주요 종목 — 시황 다음 카테고리. 본장 시세(전일比) + 괄호는 마감 후 변동(after).
 # SOX=필라델피아 반도체지수(퍼프 프록시 SMH), DRAM=Roundhill Memory ETF(네이버 DRAM.K).
 KEY_STOCKS = [
     {"name": "SOX",        "widx": ".SOX", "sym": "SMH/USDT:USDT", "dp": 2},
@@ -317,7 +318,8 @@ def _star_level(chg, sigma, hours=None) -> int:
 
 
 def _main_quote(main):
-    """본장 시세 (가격, 전일比%) — 네이버 원자재(marketindex)/해외지수/해외개별주."""
+    """본장 시세 (가격, 전일比%, meta) — 네이버 원자재(marketindex)/해외지수/해외개별주.
+    meta = {status: marketStatus, traded_at: 마지막 체결시각} — 폐장 후 변동 계산용."""
     kind, key = main
     url = {"mkidx": MKIDX.format(path=key),
            "widx": WIDX.format(code=key),
@@ -325,8 +327,13 @@ def _main_quote(main):
     try:
         j = requests.get(url, headers=UA, timeout=12).json()
     except Exception:
-        return None, None
-    return _num(j.get("closePrice")), _num(j.get("fluctuationsRatio"))
+        return None, None, None
+    try:
+        t = datetime.fromisoformat(j.get("localTradedAt") or "")
+    except ValueError:
+        t = None
+    return (_num(j.get("closePrice")), _num(j.get("fluctuationsRatio")),
+            {"status": j.get("marketStatus"), "traded_at": t})
 
 
 def _last_confirmed(url) -> tuple:
@@ -363,7 +370,7 @@ def save_main_anchor(now=None) -> dict:
     prices = {}
     for spec in DISPLAY:
         if spec.get("main"):
-            px, _ = _main_quote(spec["main"])
+            px, _, _ = _main_quote(spec["main"])
             if px:
                 prices[spec["name"]] = px
     try:
@@ -389,8 +396,45 @@ def _anchor_px(name, d):
     return (doc.get(d.strftime("%Y%m%d")) or {}).get(name)
 
 
+def _after_pct(sym, meta, end, ex):
+    """괄호 표시값 — 본장 마감 '이후'의 퍼프 변동만 (09-20 사용자).
+
+    본장이 장중이면 마감 후 변동이 아직 없으므로 항상 0. 폐장 상태면 본장
+    마지막 체결 시각(=마감) 시점의 퍼프 가격을 앵커로 지금까지의 변동을 잰다.
+    폐장인데 퍼프가 없거나 시각을 모르면 None → 괄호 생략."""
+    if not meta:
+        return None
+    if meta.get("status") == "OPEN":
+        return 0.0
+    t = meta.get("traded_at")
+    if not sym or t is None:
+        return None
+    if t >= end:
+        return 0.0        # 과거 창 재실행: 창 끝 시점엔 본장이 아직 열려 있었음
+    p0, p1 = _close_at(sym, t, ex), _close_at(sym, end, ex)
+    return (p1 / p0 - 1) * 100 if (p0 and p1) else None
+
+
+def _krx_meta(end):
+    """KRX 자산(코스피·코스닥·국내 개별주)의 본장 meta — 네이버 국내 API 엔
+    marketStatus 가 없어 거래일 09:00~15:30 여부로 직접 판정한다."""
+    t = end.timetz().replace(tzinfo=None)
+    if is_trading_date(end.date()) and dtime(9, 0) <= t < dtime(15, 30):
+        return {"status": "OPEN"}
+    for back in range(15):
+        d = (end - timedelta(days=back)).date()
+        if not is_trading_date(d):
+            continue
+        c = end.replace(year=d.year, month=d.month, day=d.day,
+                        hour=15, minute=30, second=0, microsecond=0)
+        if c <= end:
+            return {"status": "CLOSE", "traded_at": c}
+    return None
+
+
 def _attach_main(row, px, chg):
-    """퍼프 창 변동을 괄호(perp_pct)로 밀고 본장 시세를 앞세운다.
+    """퍼프 창 변동을 perp_pct 로 보존(신호 점수·★ 판정용)하고 본장 시세를 앞세운다.
+    괄호 '표시'는 after_pct(마감 후 변동)가 따로 맡는다 — 09-20 개편.
     화살표·★ 판정(chg_pct)은 밤사이 감지 목적에 맞게 퍼프 쪽을 유지한다."""
     if px is None or chg is None:
         return row
@@ -412,21 +456,25 @@ def _row_kr(spec, start, end, ex):
         if d:
             c, ratio = _num(d.get("closePrice")), _num(d.get("fluctuationsRatio"))
             if c is not None and ratio is not None:
-                # 장중에도 EWY 퍼프를 괄호로 병기(09-15 사용자) — 화살표·★은 본장 기준 유지
                 row = {"end_px": c, "chg_pct": ratio, "decimals": spec["dp"],
-                       "idx_star": True}
+                       "idx_star": True,
+                       "after_pct": _after_pct(spec.get("sym"), _krx_meta(end),
+                                               end, ex)}
                 if spec.get("sym"):
                     rp = _row_perp(spec, start, end, ex)
                     if rp.get("chg_pct") is not None:
+                        # EWY 창 변동은 신호 점수용으로만 보존 — 표시는 after_pct
                         row["perp_pct"] = rp["chg_pct"]
                         row["chg_label"] = f"{ratio:+.2f}%"
                 return row
-    # 장외: 본장 마지막 확정(전일 종가·전일比)을 앞세우고, 코스피는 EWY 퍼프를 괄호로
+    # 장외: 본장 마지막 확정(전일 종가·전일比)을 앞세우고, 코스피는 마감 후 변동을 괄호로
     px, ch = _last_confirmed(INDEX_DAILY.format(code=spec["index"]))
     if spec.get("sym"):
         r = _row_perp(spec, start, end, ex)
         if px is not None and ch is not None:
-            return _attach_main(r, px, ch)
+            r = _attach_main(r, px, ch)
+            r["after_pct"] = _after_pct(spec["sym"], _krx_meta(end), end, ex)
+            return r
         r["proxy"] = "EWY"                # 본장 조회 실패 시 기존 표시로 폴백
         return r
     if px is not None and ch is not None:
@@ -443,7 +491,7 @@ def _poll_stock(code: str) -> dict | None:
 
 
 def _key_stock_rows(start, end, ex) -> list:
-    """주요 종목 행 — 본장 시세(전일比) 우선 + (Perp. 창변동%) 괄호.
+    """주요 종목 행 — 본장 시세(전일比) 우선 + 괄호(after_pct)는 마감 후 변동만.
 
     SOX 는 지수+SMH 퍼프, DRAM 은 DXI 단독(퍼프 없음), 개별주는
     장중 basic(실시간) / 장외 일별시세 확정 행 + 자사 퍼프.
@@ -452,16 +500,18 @@ def _key_stock_rows(start, end, ex) -> list:
     use_index = index_available(start, end)
     for spec in KEY_STOCKS:
         row = None
-        px = ch = None
+        px = ch = meta = None
         if spec.get("wstock"):            # 해외 ETF(DRAM 등) — 본장 + (있으면) 퍼프
-            px, ch = _main_quote(("wstock", spec["wstock"]))
+            px, ch, meta = _main_quote(("wstock", spec["wstock"]))
             if not spec.get("sym"):
                 if px is None:
                     continue
-                row = {"end_px": px, "chg_pct": ch, "decimals": spec["dp"]}
+                row = {"end_px": px, "chg_pct": ch, "decimals": spec["dp"],
+                       "after_pct": _after_pct(None, meta, end, ex)}
         elif spec.get("widx"):
-            px, ch = _main_quote(("widx", spec["widx"]))
+            px, ch, meta = _main_quote(("widx", spec["widx"]))
         else:
+            meta = _krx_meta(end)
             if use_index:
                 b = _poll_stock(spec["code"]) or {}
                 px = _num(str(b.get("closePrice") or "").replace(",", ""))
@@ -472,6 +522,7 @@ def _key_stock_rows(start, end, ex) -> list:
             row = _row_perp({"sym": spec["sym"], "dp": spec["dp"]}, start, end, ex)
             if px is not None and ch is not None:
                 _attach_main(row, px, ch)
+                row["after_pct"] = _after_pct(spec["sym"], meta, end, ex)
             else:
                 row["proxy"] = "perp"     # 본장 조회 실패 시 기존 표시로 폴백
         row["name"] = spec["name"]
@@ -514,8 +565,9 @@ def fetch_window(slot: str, now: datetime | None = None):
         if spec["src"] == "perp":
             row = _row_perp(spec, start, end, ex)
             if spec.get("main"):
-                px, ch = _main_quote(spec["main"])
+                px, ch, meta = _main_quote(spec["main"])
                 _attach_main(row, px, ch)
+                row["after_pct"] = _after_pct(spec["sym"], meta, end, ex)
                 # 오일·금(24시간 본장)은 전일比 대신 15:30 앵커 스냅샷 기준으로 재계산
                 # → 퍼프와 같은 잣대. 스냅샷 없으면(주말 직후 등) 전일比 유지.
                 if spec["main"][0] == "mkidx" and px:
@@ -566,5 +618,7 @@ if __name__ == "__main__":
                 print(f"   {r['name']:<8} 데이터 없음"); continue
             mark = " ★" if r["significant"] else ""
             tag = f" ({r['proxy']})" if r.get("proxy") else ""
+            ap = r.get("after_pct")
+            after = f" (after {ap:+.2f}%)" if ap is not None else ""
             print(f"   {r['name']:<8} {r['end_px']:>10,.{r['decimals']}f}  "
-                  f"{r['chg_label']:>14}{mark}{tag}")
+                  f"{r['chg_label']:>14}{after}{mark}{tag}")
