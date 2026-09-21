@@ -50,24 +50,22 @@ def pick_slot(now: datetime) -> str:
 
 
 def is_kr_trading_day(d: datetime) -> tuple[bool, str]:
-    """한국 증시 개장일 여부. (열림, 사유)"""
+    """한국 증시 개장일 여부. (열림, 사유)
+
+    거래일 소스는 quotes._load_trading_dates(네이버 1차·FDR 폴백) 공용 —
+    FDR 단독은 이틀 지연이라 월요일마다 연휴로 오판할 수 있다(09-21 실제 발생)."""
     if d.weekday() >= 5:
         return False, f"{'토' if d.weekday()==5 else '일'}요일"
-    try:
-        import FinanceDataReader as fdr
-        ks = fdr.DataReader("KS11", (d - timedelta(days=12)).strftime("%Y-%m-%d"))
-        if len(ks) == 0:
-            return True, "판정불가(기본 개장)"
-        last = ks.index[-1].date()
-        # 오늘 데이터가 이미 있으면 확실히 개장일
-        if last == d.date():
-            return True, "당일 데이터 확인"
-        # 직전 거래일이 3영업일 이상 전이면 연휴 가능성
-        gap = (d.date() - last).days
-        if gap >= 4:
-            return False, f"직전 거래일 {last} (연휴 추정)"
-    except Exception:
-        pass
+    dates, last = quotes._load_trading_dates()
+    if not dates:
+        return True, "판정불가(기본 개장)"
+    # 오늘 데이터가 이미 있으면 확실히 개장일
+    if d.date() in dates:
+        return True, "당일 데이터 확인"
+    # 직전 거래일이 3영업일 이상 전이면 연휴 가능성
+    gap = (d.date() - last).days
+    if gap >= 4:
+        return False, f"직전 거래일 {last} (연휴 추정)"
     return True, "개장 추정"
 
 

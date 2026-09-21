@@ -121,18 +121,44 @@ _TRADING_CACHE = {"dates": None, "last": None}
 
 
 def _load_trading_dates():
-    """최근 90일 한국 거래일 집합. KS11 에 데이터가 있으면 그날은 확실히 거래일."""
+    """최근 90일 한국 거래일 집합. 데이터가 있는 날은 확실히 거래일.
+
+    네이버 일별 시세 1차 — FDR KS11 은 이틀씩 늦어 월요일 아침이면 직전 거래일이
+    목요일로 보이고, cli 의 연휴 추정(gap>=4)이 정상 거래일을 휴장으로 오판한다
+    (09-21 실제 발생: 알림 4슬롯 전부 스킵). FDR 은 네이버 실패 시 폴백."""
     if _TRADING_CACHE["dates"] is not None:
         return _TRADING_CACHE["dates"], _TRADING_CACHE["last"]
-    dates, last = set(), None
-    try:
-        import FinanceDataReader as fdr
-        start = (datetime.now(KST) - timedelta(days=90)).strftime("%Y-%m-%d")
-        ks = fdr.DataReader("KS11", start)
-        dates = {d.date() for d in ks.index}
-        last = max(dates) if dates else None
-    except Exception:
-        pass
+    dates = set()
+    floor = (datetime.now(KST) - timedelta(days=90)).date()
+    for page in range(1, 6):
+        try:
+            rows = requests.get(INDEX_DAILY.format(code="KOSPI"),
+                                params={"pageSize": 20, "page": page},
+                                headers=UA, timeout=12).json()
+        except Exception:
+            break
+        if not isinstance(rows, list) or not rows:
+            break
+        oldest = None
+        for r in rows:
+            try:
+                d = datetime.strptime((r.get("localTradedAt") or "")[:10],
+                                      "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            oldest = d if oldest is None else min(oldest, d)
+            if d >= floor:
+                dates.add(d)
+        if oldest is None or oldest < floor:
+            break
+    if not dates:
+        try:
+            import FinanceDataReader as fdr
+            ks = fdr.DataReader("KS11", floor.strftime("%Y-%m-%d"))
+            dates = {d.date() for d in ks.index}
+        except Exception:
+            pass
+    last = max(dates) if dates else None
     _TRADING_CACHE["dates"], _TRADING_CACHE["last"] = dates, last
     return dates, last
 
