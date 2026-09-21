@@ -53,18 +53,28 @@ def is_kr_trading_day(d: datetime) -> tuple[bool, str]:
     """한국 증시 개장일 여부. (열림, 사유)
 
     거래일 소스는 quotes._load_trading_dates(네이버 1차·FDR 폴백) 공용 —
-    FDR 단독은 이틀 지연이라 월요일마다 연휴로 오판할 수 있다(09-21 실제 발생)."""
+    FDR 단독은 이틀 지연이라 월요일마다 연휴로 오판할 수 있다(09-21 실제 발생).
+    당일 데이터가 아직 없으면(개장 전·휴장) 휴장 캘린더와 교차 확인한다 —
+    gap 휴리스틱만으로는 연휴 첫날 아침을 개장으로 오판한다(09-21 사용자)."""
     if d.weekday() >= 5:
         return False, f"{'토' if d.weekday()==5 else '일'}요일"
     dates, last = quotes._load_trading_dates()
-    if not dates:
-        return True, "판정불가(기본 개장)"
-    # 오늘 데이터가 이미 있으면 확실히 개장일
+    # 오늘 데이터가 이미 있으면 확실히 개장일 (임시개장 등 캘린더보다 우선)
     if d.date() in dates:
         return True, "당일 데이터 확인"
-    # 직전 거래일이 3영업일 이상 전이면 연휴 가능성
-    gap = (d.date() - last).days
-    if gap >= 4:
+    hol = quotes.kr_holiday(d.date())
+    if hol:
+        return False, f"휴장 캘린더: {hol}"
+    if not dates:
+        return True, "판정불가(기본 개장)"
+    # 직전 거래일 이후 '주말·캘린더 휴장으로 설명 안 되는' 결측 평일이 3일 이상이면
+    # 캘린더에 없는 임시휴장이 이어지는 중이라고 본다. 달력 gap 만 보면 추석 연휴
+    # 다음 첫 거래일 아침(직전 데이터 5일 전)을 휴장으로 오판한다(09-21 사용자).
+    unexplained = sum(
+        1 for i in range(1, (d.date() - last).days)
+        if (x := last + timedelta(days=i)).weekday() < 5
+        and quotes.kr_holiday(x) is None)
+    if unexplained >= 3:
         return False, f"직전 거래일 {last} (연휴 추정)"
     return True, "개장 추정"
 

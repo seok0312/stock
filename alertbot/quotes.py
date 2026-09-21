@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime
 
 import ccxt
@@ -118,13 +118,37 @@ def exchange():
 
 # ── 거래일 판정 (앵커 선택용) ──────────────────────────────────────
 _TRADING_CACHE = {"dates": None, "last": None}
+_KR_HOLIDAYS: dict[int, dict] = {}
+
+
+def kr_holiday(d) -> str | None:
+    """d(date)가 한국 공휴일/휴장일이면 이름, 아니면 None.
+
+    events 의 휴장 일정과 같은 규칙(holidays 패키지 + 근로자의날 + 연말 휴장).
+    거래 데이터에 아직 안 잡힌 당일·미래 날짜의 휴장 교차 확인용(09-21 사용자) —
+    데이터가 이미 있는 날은 캘린더보다 데이터가 우선이다(임시개장 등)."""
+    y = d.year
+    if y not in _KR_HOLIDAYS:
+        table = {}
+        try:
+            import holidays as _hol
+            table = dict(_hol.KR(years=[y], language="ko"))
+        except Exception:
+            pass
+        table.setdefault(date(y, 5, 1), "근로자의 날")
+        ye = date(y, 12, 31)         # KRX 연말 휴장 = 마지막 영업일(주말이면 직전 금요일)
+        while ye.weekday() >= 5:
+            ye -= timedelta(days=1)
+        table.setdefault(ye, "연말 휴장")
+        _KR_HOLIDAYS[y] = table
+    return _KR_HOLIDAYS[y].get(d)
 
 
 def _load_trading_dates():
     """최근 90일 한국 거래일 집합. 데이터가 있는 날은 확실히 거래일.
 
     네이버 일별 시세 1차 — FDR KS11 은 이틀씩 늦어 월요일 아침이면 직전 거래일이
-    목요일로 보이고, cli 의 연휴 추정(gap>=4)이 정상 거래일을 휴장으로 오판한다
+    목요일로 보이고, cli 의 휴장 판정이 정상 거래일을 연휴로 오판한 적이 있다
     (09-21 실제 발생: 알림 4슬롯 전부 스킵). FDR 은 네이버 실패 시 폴백."""
     if _TRADING_CACHE["dates"] is not None:
         return _TRADING_CACHE["dates"], _TRADING_CACHE["last"]
@@ -144,8 +168,8 @@ def _load_trading_dates():
             try:
                 d = datetime.strptime((r.get("localTradedAt") or "")[:10],
                                       "%Y-%m-%d").date()
-            except ValueError:
-                continue
+            except (ValueError, TypeError, AttributeError):
+                continue     # 형식 변화가 크론 알림 전체를 죽이면 안 된다 → FDR 폴백행
             oldest = d if oldest is None else min(oldest, d)
             if d >= floor:
                 dates.add(d)
@@ -166,15 +190,15 @@ def _load_trading_dates():
 def is_trading_date(d) -> bool:
     """d(date)가 한국 거래일인가.
 
-    과거는 KS11 실적으로 정확히 판정한다(공휴일·임시휴장 모두 반영).
-    KS11 에 아직 안 잡힌 당일/미래는 평일 여부로 근사한다 — 앵커 탐색은
-    과거를 향하므로 이 근사가 문제되는 건 '당일 앵커'뿐이고,
-    그날이 휴장이면 알림 자체가 스킵되므로 영향이 없다.
+    과거는 지수 실적으로 정확히 판정한다(공휴일·임시휴장 모두 반영).
+    데이터에 아직 안 잡힌 당일/미래는 평일 여부 + 휴장 캘린더로 근사한다 —
+    연휴 직후 아침엔 연휴 기간이 아직 '미래' 취급이라, 캘린더 교차 확인이
+    없으면 휴장일 15:30 에 앵커를 놓는 오판이 생긴다(09-21 사용자).
     """
     dates, last = _load_trading_dates()
     if last is not None and d <= last:
         return d in dates
-    return d.weekday() < 5
+    return d.weekday() < 5 and kr_holiday(d) is None
 
 
 def window_bounds(slot: str, now=None):

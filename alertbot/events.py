@@ -246,7 +246,12 @@ def _holidays(start: datetime, end: datetime) -> list:
         kr = dict(_hol.KR(years=years, language="ko"))
         for y in years:
             kr.setdefault(_dt_date(y, 5, 1), "근로자의 날")
-            kr.setdefault(_dt_date(y, 12, 31), "연말 휴장")
+            # KRX 연말 휴장 = 마지막 영업일(12/31 이 주말이면 직전 금요일).
+            # quotes.kr_holiday 와 같은 규칙 — 어긋나면 브리핑 일정과 스킵이 모순된다.
+            ye = _dt_date(y, 12, 31)
+            while ye.weekday() >= 5:
+                ye -= timedelta(days=1)
+            kr.setdefault(ye, "연말 휴장")
         for d, name in sorted(kr.items()):
             if d.weekday() >= 5:
                 continue

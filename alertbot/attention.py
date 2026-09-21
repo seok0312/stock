@@ -36,8 +36,8 @@ def in_window(now=None) -> bool:
     if now.weekday() >= 5:
         return False
     try:
-        import holidays
-        if now.date() in holidays.KR(years=now.year):
+        import quotes                 # 휴장 규칙 단일화(연말 휴장 포함) — 09-21
+        if quotes.kr_holiday(now.date()):
             return False
     except Exception:
         pass
