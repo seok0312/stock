@@ -79,12 +79,32 @@ def is_kr_trading_day(d: datetime) -> tuple[bool, str]:
     return True, "개장 추정"
 
 
+def is_holiday_eve(now: datetime) -> tuple[bool, str]:
+    """휴식기(주말·공휴일·연휴) '마지막 날'인가 — 오늘 휴장이고 내일 개장.
+
+    일요일 18시 주말 점검의 일반형(09-21 사용자): 연휴가 월요일까지 이어지면
+    일요일이 아니라 그 월요일 저녁에 발송된다."""
+    ok, why = is_kr_trading_day(now)
+    if ok:
+        return False, f"오늘 개장일({why})"
+    nxt = (now + timedelta(days=1)).date()
+    if nxt.weekday() >= 5:
+        return False, "내일 주말"
+    hol = quotes.kr_holiday(nxt)
+    if hol:
+        return False, f"내일도 휴장({hol})"
+    return True, f"오늘 휴장({why}) · 내일 개장"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="종가베팅 시간대별 브리핑")
     ap.add_argument("--slot", default="auto",
                     choices=["auto"] + list(quotes.SLOTS))
     ap.add_argument("--dry-run", action="store_true", help="텔레그램 전송 없이 출력만")
     ap.add_argument("--force", action="store_true", help="휴장일에도 실행")
+    ap.add_argument("--holiday-eve", action="store_true",
+                    help="휴식기(주말·연휴) 마지막 날에만 발송 — 내일 개장 아니면 "
+                         "조용히 종료. 매일 18시 크론용(일요일 주말 점검의 일반형)")
     ap.add_argument("--no-news", action="store_true")
     ap.add_argument("--no-sectors", action="store_true")
     ap.add_argument("--no-flows", action="store_true")
@@ -99,6 +119,14 @@ def main(argv=None):
 
     now = datetime.now(KST)
     slot = pick_slot(now) if args.slot == "auto" else args.slot
+
+    if args.holiday_eve:
+        eve, ewhy = is_holiday_eve(now)
+        if not eve:
+            print(f"[skip] 휴식기 마지막 날 아님 — {ewhy}")
+            return 0
+        print(f"[eve] 휴식기 마지막 날 점검 — {ewhy}")
+        args.force = True                 # 오늘은 휴장이지만 발송이 목적
 
     ok, why = is_kr_trading_day(now)
     if not ok and not args.force:

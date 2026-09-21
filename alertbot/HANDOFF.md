@@ -6,7 +6,7 @@
 
 ## 0. 현재 상태 — 전부 자동으로 돌고 있다
 
-- **텔레그램 브리핑**: 평일 9슬롯(+일 18:00). 채널: 종가베팅(`ALERTBOT_CHAT_ID`) /
+- **텔레그램 브리핑**: 평일 9슬롯(+휴식기 마지막 날 18:00). 채널: 종가베팅(`ALERTBOT_CHAT_ID`) /
   업비트(`TELEGRAM_CHAT_ID`) / **LOG(`LOG_CHAT_ID`) 개인 전용**(remind.py, 테마스캔).
 - **대시보드**: http://165.22.108.193/closebet.html (15:45 잠정 · 18:40 확정 갱신)
 - **데이터 축적** (서버 `/opt/alertbot/data/`): intraday/ · snapshots.jsonl · reactions.jsonl ·
@@ -91,7 +91,8 @@
 ```
 알림:   21:00(0600) 22:50(0750) 23:50(0850) 00:30(0930) 05:30(1430)
         06:36(1530 마감 본편) 07:31(1630 확정갱신·조건부) 10:00(1900) 11:00(2000)
-        일 09:00(1800 --force)
+        매일 09:00(1800 --holiday-eve): 휴식기(주말·연휴) 마지막 날 18시에만
+        발송 — 오늘 휴장 & 내일 개장일 때. 일요일 --force 크론의 일반형(09-21)
 수집:   06:35 collect 1535 / 06:45·09:40 intraday+dashboard(+predictions --evaluate)
         일 08:00 nxt --build-map / */5 attention --collect(창 자체판정)
 픽:     06:20(15:20 기록) 00:05(09:05 채점) closebet_picks
