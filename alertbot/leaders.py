@@ -86,7 +86,8 @@ def fetch_leaders(top: int = 5, min_change: float = 2.0, use_kiwoom: bool = True
             from closebet.kiwoom import KiwoomClient
             kc = KiwoomClient()
             for x in out:
-                x["주도일수"] = _lead_days(kc, x["종목코드"], x.get("시가총액조"), date)
+                x["주도일수"], x["수급태그"] = _kiwoom_tags(
+                    kc, x["종목코드"], x.get("시가총액조"), date)
                 time.sleep(0.2)
         except Exception as e:
             print(f"  주도일수 계산 실패(태그 생략): {type(e).__name__}: {str(e)[:80]}")
@@ -94,9 +95,11 @@ def fetch_leaders(top: int = 5, min_change: float = 2.0, use_kiwoom: bool = True
     return {"date": date, "source": src, "rows": out}
 
 
-def _lead_days(kc, code: str, mc_jo, date: str, days: int = 20):
-    """최근 days 거래일 중 '시총구간 등락률 문턱(10조↑3%/1~10조 5%/1조↓7%)'을
-    넘은 날 수. 연속성 표시용 — 삼전닉스류(수십일)와 반짝 테마주를 구분해 준다."""
+def _kiwoom_tags(kc, code: str, mc_jo, date: str, days: int = 20):
+    """(주도일수, 수급태그) — ka10059 한 콜로 둘 다 계산한다.
+
+    주도일수: 최근 days 거래일 중 시총구간 등락률 문턱(10조↑3%/1~10조 5%/1조↓7%)
+    을 넘은 날 수. 연속성 표시용 — 삼전닉스류(수십일)와 반짝 테마주를 구분해 준다."""
     tier = 3.0 if (mc_jo or 0) >= 10 else (5.0 if (mc_jo or 0) >= 1 else 7.0)
     try:
         d, _ = kc.request("ka10059",
@@ -104,18 +107,46 @@ def _lead_days(kc, code: str, mc_jo, date: str, days: int = 20):
                            "trde_tp": "0", "unit_tp": "1"},
                           endpoint="/api/dostk/stkinfo")
         rows = sorted((r for r in d.get("stk_invsr_orgn") or []),
-                      key=lambda r: r.get("dt") or "", reverse=True)[:days]
+                      key=lambda r: r.get("dt") or "", reverse=True)
         n = 0
-        for r in rows:
+        for r in rows[:days]:
             try:
                 chg = float(str(r.get("flu_rt")).replace(",", "").lstrip("+")) / 100.0
             except (TypeError, ValueError):
                 continue
             if chg >= tier:
                 n += 1
-        return n
+        return n, _flow_tag(rows, date)
     except Exception:
+        return None, None
+
+
+def _flow_tag(rows, date: str):
+    """외인 수급 태그(09-24 보유곡선 검증, 과열 종목 130개×3년 기준) —
+    '외인 전환' = 전일까지 순매도, 당일 첫 순매수 → 보유 연장 후보
+                 (D+1종가 +0.47% → D+10 +3.01% 단조, 2023~26 연도 불변)
+    '외인 매도' = 당일 순매도 → 갭이 커도 익일 장중 전부 반납(D+1종가 -0.05%) → 시가 매도
+    '뒷북'     = 매수 2일차 이상 → 연장 근거 없음(2일차 D+1종가 +0.05%) → 시가 매도
+    최신 행이 당일(잠정, KRX 장중 공표 ~14:22)이 아니거나 0이면 판정 보류(None).
+    rows 는 dt 내림차순."""
+    vals = []
+    for r in rows:
+        try:
+            vals.append((r.get("dt"),
+                         float(str(r.get("frgnr_invsr")).replace(",", "").lstrip("+"))))
+        except (TypeError, ValueError):
+            continue
+    if not vals or vals[0][0] != date or vals[0][1] == 0:
         return None
+    if vals[0][1] < 0:
+        return "외인 매도"
+    streak = 1
+    for _, v in vals[1:]:
+        if v > 0:
+            streak += 1
+        else:
+            break
+    return "외인 전환" if streak == 1 else "뒷북"
 
 
 def _f(v):

@@ -493,6 +493,9 @@ def section_leaders(ld, title="🎯 <b>주도주</b>"):
             seg += f" / <i>{esc(r['섹터'])}</i>"
         if r.get("주도일수") is not None:  # 연속성 태그 — 반짝 vs 지속 주도 구분 (09-15)
             seg += f" · <i>주도 {r['주도일수']:.0f}/20일</i>"
+        tag = r.get("수급태그")            # 외인 수급 태그 → 매도 타이밍 가이드 (09-24)
+        if tag:
+            seg += f" · <b>{esc(tag)} → {'보유' if tag == '외인 전환' else '시가매도'}</b>"
         lines.append(seg)
         # 거래원별 순매수 서브라인은 09-11 제거 — 변동률·거래대금만 (수급은 점수에만 반영)
     return "\n".join(lines)
