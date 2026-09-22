@@ -129,10 +129,9 @@ def section_summary(win, fl=None, cmp=None, events=None, kr_upjong=None,
     big = [r for r in (win.get("rows") or []) if (r.get("stars") or 0) >= 2]
     big += [r for r in (win.get("key_stocks") or []) if (r.get("stars") or 0) >= 2]
     big.sort(key=lambda r: (-(r.get("stars") or 0), -abs(r.get("chg_pct") or 0)))
-    if big:
-        seg = " · ".join(f"{esc(r['name'])} {r['chg_pct']:+.1f}%{'★' * r['stars']}"
-                         for r in big[:3])
-        bits.append(f"변동: {seg}")
+    # 자산별 개별 줄, '변동:' 접두 없이 (09-22 사용자)
+    for r in big[:3]:
+        bits.append(f"{esc(r['name'])} {r['chg_pct']:+.1f}%{'★' * r['stars']}")
     # EWY 퍼프(주 신호) + QQQ 퍼프 — 창 기준, v2 가중치
     ewy = _perp_of(next((r for r in win.get("rows") or [] if r["name"] == "코스피"), None))
     if ewy is not None:
