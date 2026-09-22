@@ -311,12 +311,24 @@ def main(argv=None):
         except Exception as e:
             print(f"  일정 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
+    trend_sig = None
+    if not args.no_flows:
+        try:
+            import flows as _flt
+            trend_sig = _flt.trend_signal()
+            if trend_sig:
+                print(f"  수급 신호: 외국인 매수 {trend_sig['frgn_streak']}일차"
+                      f" · 동반매도 {trend_sig['both_sell']} ({trend_sig['date']})")
+        except Exception as e:
+            print(f"  수급 신호 수집 실패(계속 진행): {type(e).__name__}: {e}")
+
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
                        leaders=ld, us_leaders=us_leaders, nxt_pm=nxt_pm,
                        events=ev_ctx, us_movers=us_mv,
                        flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
-                       footer=f"유의미 변동 {sig}/5종 · 자동수집")
+                       footer=f"유의미 변동 {sig}/5종 · 자동수집",
+                       trend=trend_sig)
     notify.send(msg, dry_run=args.dry_run)
     if slot == "1530" and not args.dry_run:
         try:

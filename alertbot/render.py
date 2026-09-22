@@ -91,8 +91,12 @@ def _pad(s: str, width: int, align: str = "l") -> str:
 #   거래대금 수위     IC+0.32 β+0.98 → 평소 ±15% 에 ±2
 #   QQQ 퍼프 창변동  IC+0.60 β+0.52 → ±0.5% 에 ±1 (EWY 와 공선이라 소폭만)
 #   오버나이트 발표   이벤트밤 평균 +0.46% vs 없는 밤 +1.80% → -1, 금리/FOMC -2
-#   수급 대량 매수/매도 ±1 — 시계열 미검증(같은시각 표본 부족), v1 유지
-#   탈락: 코스피 본장 등락(IC+0.08, EWY 통제 시 잉여) · 오일(-0.16) · 금 · BTC
+#   수급(09-22 교체): 외국인 매수 전환 1~2일차 +1 (T2 +1.31%/+0.99%, 3일차+ 뒷북 0),
+#     외인·기관 동반 매도 -1 (T2 -0.16%/승률 44%, 유일한 음수 조합. 기관 단독 무시)
+#     — 기존 z 대량 ±1 은 미검증이라 폐기, z 대량은 표시만 유지.
+#   탈락: 코스피 본장 등락(IC+0.08, EWY 통제 시 잉여) · 금 · BTC
+#     오일: 간밤 창은 잡음(IC -0.25~+0.02 불안정). 장중 창(09→15시)은 IC +0.15 로
+#     통념 방향이나 EWY 통제 미검증 → 보류(HANDOFF 미결 7).
 _SIG_LABEL = ((3, "우호"), (1, "약우호"), (0, "중립"), (-2, "신중"), (-99, "관망"))
 
 
@@ -107,7 +111,7 @@ def _perp_of(row):
 
 
 def section_summary(win, fl=None, cmp=None, events=None, kr_upjong=None,
-                    us_movers=None, kr_impact=None):
+                    us_movers=None, kr_impact=None, trend=None):
     """맨 윗줄 요약 — 본문 섹션 순서(발표→시황→거래대금→수급→주도→미국)대로 압축.
 
     첫 줄은 종가베팅 신호 점수(규칙은 위 주석). 소재 없으면 그 줄 생략."""
@@ -158,8 +162,22 @@ def section_summary(win, fl=None, cmp=None, events=None, kr_upjong=None,
         buy = c["today"] > c.get("avg_long", 0)
         stars = "★" * (3 if abs(z) >= 2.0 else 2 if abs(z) >= 1.5 else 1)
         fs.append(f"{name} 대량 {'매수' if buy else '매도'}{stars}")
-        if key in ("foreign", "inst"):
-            score += 1 if buy else -1
+    # 점수는 z 대량이 아니라 검증된 전환/동반매도 신호로 (규칙은 위 주석, 09-22).
+    # 기준일이 어제(아침 슬롯)면: 어제 전환 1일차 → 오늘 2일차 진행 추정만 +1
+    # (외인 지속확률 57%). 어제 2일차(오늘 3일차 추정=뒷북)·어제 동반매도(효과는
+    # 간밤 T2 로 이미 실현)는 미부여 — 09-23 리뷰.
+    if trend:
+        st = trend.get("frgn_streak") or 0
+        if trend.get("is_today"):
+            if 1 <= st <= 2:
+                score += 1
+                fs.append(f"외국인 매수 전환 {st}일차")
+            elif trend.get("both_sell"):
+                score -= 1
+                fs.append("외인·기관 동반 매도")
+        elif st == 1:
+            score += 1
+            fs.append("외국인 매수 전환 2일차 추정")
     if fs:
         bits.append("수급: " + " · ".join(fs))
 
@@ -200,10 +218,24 @@ def section_summary(win, fl=None, cmp=None, events=None, kr_upjong=None,
                 timing = ("지금(14:30) 매수 — 중립 흐름은 20시까지 계속 상승 경향" if abs(f) < 0.3
                           else "15:20 대기 — 강세는 마감 전 되돌림, 저녁 반등이라 20시는 불리" if f >= 0.3
                           else "15:20 대기 — 약세 낮 지속, 주도주는 저녁 반등이라 20시는 불리")
-            else:
-                timing = ("지금 매수 우위 — 중립 흐름 (실측 승률 81%)" if abs(f) < 0.3
-                          else "20시 근처 대기 — 강세 흐름은 되돌림 경향" if f >= 0.3
-                          else "지금 매수 무방 — 약세는 막판 반등 경향")
+            elif kr_row.get("perp_pct") is not None:
+                # 2차 기회(09-22 실측, EWY 낮약세 52일): 낮 약세(-0.3%↓)로 보류한 날
+                # 저녁(15:30→19시) +0.3%↑ 반전이면 19:30 진입 +1.39%/승률 67%,
+                # 반전 없으면 +0.17%/45% → 스킵. 개별 종목(하이닉스 -1.80%, n=17)은
+                # 역방향 사례가 있어 시장(코스피) 레벨 판단만 제공한다.
+                # perp_pct 가드: EWY 퍼프 실패 폴백이면 f==본장 등락이라 저녁 흐름을
+                # 모른다 — 그땐 타이밍 줄 자체를 생략(09-23 리뷰, 승률 45% 오인용 방지).
+                day = (kr_row or {}).get("main_pct")      # 본장(낮) 마감 등락
+                if day is not None and day <= -0.3:
+                    timing = ("2차 기회 — 낮 약세 후 저녁 반전, 19:30 진입 유효 (실측 승률 67%)"
+                              if f > 0.3 else
+                              "스킵 권고 — 낮 약세 + 저녁 반전 없음 (실측 승률 45%)")
+                elif abs(f) < 0.3:
+                    timing = "지금 매수 우위 — 중립 흐름 (실측 승률 81%)"
+                elif f >= 0.3:
+                    timing = "20시 근처 대기 — 강세 흐름은 되돌림 경향"
+                else:
+                    timing = "지금 매수 무방 — 약세는 막판 반등 경향"
 
     if not bits:
         return ""
@@ -595,10 +627,11 @@ def section_flows(fl, cmp=None):
 
 def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
           flows=None, flows_cmp=None, kr_upjong=None, kr_themes=None, kr_when=None,
-          us_leaders=None, events=None, nxt_pm=None, us_movers=None, footer=None):
+          us_leaders=None, events=None, nxt_pm=None, us_movers=None, footer=None,
+          trend=None):
     parts = [header(win)]
     for s in (section_summary(win, flows, flows_cmp, events, kr_upjong,
-                              us_movers, kr_impact),
+                              us_movers, kr_impact, trend),
               section_events_ahead(events),       # 발표 예정을 맨 위로 (09-15 사용자)
               section_events_done(events),
               section_quotes(win),

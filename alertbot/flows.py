@@ -105,6 +105,77 @@ def fetch_trend(code: str) -> dict | None:
         return None
 
 
+def trend_hist(dates_ymd) -> dict:
+    """지정 거래일들의 코스피 투자자 순매수(억원) — trend + bizdate.
+
+    trend 는 파라미터 없이는 당일 1건만 반환한다(09-22 확인). 장 시작 전의 당일처럼
+    값이 전부 0인 날은 '아직 데이터 없음'으로 취급해 뺀다(0 순매수는 사실상 불가능).
+    반환: {'YYYYMMDD': {'frgn','inst'}} — 조회 실패/미집계 날은 키 자체가 없다."""
+    import time as _time
+    out = {}
+    for ds in dates_ymd:
+        try:
+            r = requests.get(TREND.format(code="KOSPI"), params={"bizdate": ds},
+                             headers=UA, timeout=12).json()
+        except Exception:
+            continue
+        if not isinstance(r, dict) or r.get("bizdate") != ds:
+            continue
+        f, i = _num(r.get("foreignValue")), _num(r.get("institutionalValue"))
+        if f is None or i is None or (f == 0 and i == 0):
+            continue
+        out[ds] = {"frgn": f, "inst": i}
+        _time.sleep(0.03)
+    return out
+
+
+def trend_signal(now=None) -> dict | None:
+    """신호점수용 수급 판정 — {'date','is_today','frgn_streak','both_sell'} 또는 None.
+
+    실측(09-22, 159~259일): 외국인 매수 전환 1일차 T2 +1.31%/승률 75%, 2일차 +0.99%,
+    3일차+ 는 뒷북(+0.12%). 외인·기관 동반 매도일 -0.16%/승률 44%(유일한 음수 조합).
+    기관 단독 방향은 외인 통제 시 정보가치 없음.
+
+    안전 규칙(09-23 리뷰 반영):
+    - 기준일 = 14시 이후면 오늘(잠정치, KRX 최종잠정 14:22 공표 후), 그 전엔 직전
+      거래일 — 개장 직후 부분 누적치로 판정하지 않는다.
+    - 기준일 데이터가 없으면 None — 낡은 날짜의 신호를 무표기로 쓰지 않는다.
+    - 역방향 스캔 중 결측일을 만나면 streak 미확정 → 3일+ 확정 전이면 None.
+      (결측을 건너뛰면 비연속을 연속으로 세거나 뒷북을 전환일로 오판한다)"""
+    from datetime import datetime
+
+    import quotes
+    now = now or datetime.now(KST)
+    dates, _ = quotes._load_trading_dates()
+    want = [d.strftime("%Y%m%d") for d in sorted(dates)[-8:]]
+    today = now.strftime("%Y%m%d")
+    if today in want and now.hour < 14:
+        want.remove(today)
+    if not want:
+        return None
+    got = trend_hist(want)
+    if want[-1] not in got:
+        return None
+    streak, known = 0, True
+    for ds in reversed(want):
+        r = got.get(ds)
+        if r is None:
+            known = False
+            break
+        if r["frgn"] > 0:
+            streak += 1
+            if streak >= 3:
+                break                     # 3일+ 확정 — 더 볼 필요 없음
+        else:
+            break                         # 매도일 — streak 확정
+    if not known and streak < 3:
+        return None
+    last = got[want[-1]]
+    return {"date": want[-1], "is_today": want[-1] == today,
+            "frgn_streak": streak,
+            "both_sell": last["frgn"] <= 0 and last["inst"] <= 0}
+
+
 def fetch_all() -> dict:
     """{rows: [...], total_amount_won, total_amount_jo, bizdate}"""
     rows, total = [], 0.0

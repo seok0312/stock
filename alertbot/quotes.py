@@ -491,6 +491,7 @@ def _attach_main(row, px, chg):
     row["perp_pct"] = row.get("chg_pct")
     row["end_px"] = px
     row["chg_label"] = f"{chg:+.2f}%"
+    row["main_pct"] = chg          # 본장 등락 숫자 — 1900 '2차 기회' 판정용(09-22)
     if row.get("perp_pct") is None:
         row["chg_pct"] = chg
     return row
