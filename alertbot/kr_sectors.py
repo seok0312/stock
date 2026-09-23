@@ -289,7 +289,11 @@ def fetch_upjong_kiwoom(top: int = 3):
         return None
     med = sorted(x["amt_eok"] for x in rows)[len(rows) // 2]
     liquid = [x for x in rows if x["amt_eok"] >= med]
-    liquid.sort(key=lambda x: x["change_pct"], reverse=True)
+    # 등락률 단독 정렬은 돈이 덜 실린 업종이 대장을 가린다(09-23 사용자 지적:
+    # 화학 +3.2%/3.6천억이 전기/전자 +1.9%/14조 위에 옴). 등락률×√거래대금으로
+    # 보정 — 등락률 2배 = 거래대금 4배 등가. 실측 비교: log 는 보정 부족(화학 여전히
+    # 1위), 대금 단순곱(기여도)·랭크합은 대금 지배로 등락률 정보가 죽음.
+    liquid.sort(key=lambda x: x["change_pct"] * (x["amt_eok"] ** 0.5), reverse=True)
 
     def pick(cands):
         # 코스피·코스닥에 같은 이름의 업종이 있어(예: IT 서비스) 이름으로 dedup —
