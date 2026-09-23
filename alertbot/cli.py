@@ -330,6 +330,15 @@ def main(argv=None):
                        footer=f"유의미 변동 {sig}/5종 · 자동수집",
                        trend=trend_sig)
     notify.send(msg, dry_run=args.dry_run)
+
+    # 주요 종목 정보 — 종가베팅 브리핑과 별개의 독립 알림(별도 메시지, 09-23 사용자).
+    # 실패해도 본편에 영향 없게 분리. 포맷 진화는 hot_stocks.py 에서만.
+    if slot in ("1430", "1900"):
+        try:
+            import hot_stocks
+            hot_stocks.send(now, dry_run=args.dry_run)
+        except Exception as e:
+            print(f"  주요종목 정보 실패(계속 진행): {type(e).__name__}: {e}")
     if slot == "1530" and not args.dry_run:
         try:
             if fl:

@@ -59,6 +59,11 @@ def get_snapshot(market: str = "KRX") -> pd.DataFrame:
     for c in _NUMERIC:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+    # FDR 이 종목 리스트만 주고 수치가 전부 NaN 인 반쪽 응답(09-23 실측)도 폴백 —
+    # '비어있지 않음'만 보면 주도주·픽·주요종목이 조용히 전멸한다.
+    if "등락률" not in df.columns or df["등락률"].notna().sum() == 0 \
+            or "거래대금" not in df.columns or df["거래대금"].notna().sum() == 0:
+        return _snapshot_naver(market)
     return df
 
 
