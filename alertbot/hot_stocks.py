@@ -172,8 +172,9 @@ def build(now=None) -> str | None:
             if x.get("주도일수") is not None:
                 extra.append(f"주도 {x['주도일수']:.0f}/20일")
             if x.get("수급태그"):
-                extra.append(f"<b>{esc(x['수급태그'])} → "
-                             f"{'보유' if x['수급태그'] == '외인 전환' else '시가매도'}</b>")
+                from leaders import TAG_ACT
+                extra.append(f"<b>{esc(x['수급태그'])}"
+                             f"({esc(TAG_ACT.get(x['수급태그'], ''))})</b>")
             if extra:
                 first, *rest = line.split("\n")
                 line = "\n".join([first + " · " + " · ".join(extra)] + rest)
@@ -181,6 +182,14 @@ def build(now=None) -> str | None:
     except Exception as e:
         sec.append(f"  · 주도주 계산 실패: {type(e).__name__}")
     parts.append("\n".join(sec))
+    # 태그 범례 — 맨 아래 (09-23 사용자: 태그명만으론 헷갈림)
+    if "수급태그" in "".join(parts) or any(
+            k in "".join(parts) for k in ("갭(", "손바뀜(", "회피(")):
+        try:
+            from leaders import TAG_LEGEND
+            parts.append(f"\n<i>{esc(TAG_LEGEND)}</i>")
+        except ImportError:
+            pass
     return "\n".join(parts)
 
 

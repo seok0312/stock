@@ -121,32 +121,50 @@ def _kiwoom_tags(kc, code: str, mc_jo, date: str, days: int = 20):
         return None, None
 
 
+# 태그 → 액션. 표기·범례는 이 두 상수를 유일 원천으로 (render/hot_stocks 가 공용).
+TAG_ACT = {"갭": "시가매도", "손바뀜": "보유", "회피": "매수 자제"}
+TAG_LEGEND = ("태그: 갭 = 개인·기관 매수 + 외인 매도 → 시가매도 유리 / "
+              "손바뀜 = 개인 팔기 시작 + 외인 사기 시작 → 보유 / "
+              "회피 = 외인만 매수(개인·기관 매도) → 매수 자제")
+
+
 def _flow_tag(rows, date: str):
-    """외인 수급 태그(09-24 보유곡선 검증, 과열 종목 130개×3년 기준) —
-    '외인 전환' = 전일까지 순매도, 당일 첫 순매수 → 보유 연장 후보
-                 (D+1종가 +0.47% → D+10 +3.01% 단조, 2023~26 연도 불변)
-    '외인 매도' = 당일 순매도 → 갭이 커도 익일 장중 전부 반납(D+1종가 -0.05%) → 시가 매도
-    '뒷북'     = 매수 2일차 이상 → 연장 근거 없음(2일차 D+1종가 +0.05%) → 시가 매도
-    최신 행이 당일(잠정, KRX 장중 공표 ~14:22)이 아니거나 0이면 판정 보류(None).
-    rows 는 dt 내림차순."""
-    vals = []
-    for r in rows:
+    """3주체(개인×외인×기관) 수급 태그 — 09-23 믹싱 검증(과열 110종목×3년).
+
+    '갭'    = 개인·기관 매수 ∧ 외인 매도 → D+1시가 +1.44%/승률 63%(1년 +1.83%/64%),
+              단 기관까지 팔면 D+5 -1.24% 붕괴라 기관 매수 필수 조건.
+    '손바뀜' = 개인 매도 전환(어제 매수→오늘 매도) ∧ 외인 매수 전환 → D+5 +1.77~2.30%.
+              기관 방향은 안 가름(전 셀 양수) — 조건에서 제외.
+    '회피'  = 외인만 매수, 개인·기관 매도 → 시가 -0.1~-0.2%/승률 42%.
+    당일 개인 잠정은 KRX 장중 공표에 없어 -(외인+기관) 부호로 근사
+    (캐시 실측: 실제 개인 부호와 97.1% 일치, 과열일 96.9%).
+    최신 행이 당일이 아니거나 외인·기관 모두 0이면 판정 보류(None). rows: dt 내림차순."""
+    def _n(x):
         try:
-            vals.append((r.get("dt"),
-                         float(str(r.get("frgnr_invsr")).replace(",", "").lstrip("+"))))
+            return float(str(x).replace(",", "").lstrip("+"))
         except (TypeError, ValueError):
+            return None
+
+    seq = []
+    for r in rows:
+        f, i = _n(r.get("frgnr_invsr")), _n(r.get("orgn"))
+        if f is None or i is None:
             continue
-    if not vals or vals[0][0] != date or vals[0][1] == 0:
+        seq.append({"dt": r.get("dt"), "f": f, "i": i, "p": _n(r.get("ind_invsr"))})
+    if not seq or seq[0]["dt"] != date or (seq[0]["f"] == 0 and seq[0]["i"] == 0):
         return None
-    if vals[0][1] < 0:
-        return "외인 매도"
-    streak = 1
-    for _, v in vals[1:]:
-        if v > 0:
-            streak += 1
-        else:
-            break
-    return "외인 전환" if streak == 1 else "뒷북"
+    t = seq[0]
+    p0 = t["p"] if t["p"] not in (None, 0) else -(t["f"] + t["i"])
+    if p0 > 0 and t["f"] <= 0 and t["i"] > 0:
+        return "갭"
+    if p0 < 0 and t["f"] > 0 and len(seq) >= 2:
+        y = seq[1]
+        yp = y["p"] if y["p"] not in (None, 0) else -(y["f"] + y["i"])
+        if y["f"] <= 0 and yp >= 0:
+            return "손바뀜"
+    if p0 <= 0 and t["f"] > 0 and t["i"] <= 0:
+        return "회피"
+    return None
 
 
 def _f(v):
