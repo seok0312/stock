@@ -331,6 +331,17 @@ def main(argv=None):
                        trend=trend_sig)
     notify.send(msg, dry_run=args.dry_run)
 
+    # 대시보드 결정 패널(①할지·비중 ②타이밍 ③종목) 갱신 — 09-29 사용자.
+    # 과거 창 수동 재실행이 실시간 패널을 덮지 않게 dry-run 은 제외.
+    if not args.dry_run:
+        try:
+            import decision
+            p = decision.save(win, render.LAST_SUMMARY, ld, now)
+            if p:
+                print(f"  결정 패널 갱신 → {p}")
+        except Exception as e:
+            print(f"  결정 패널 실패(계속 진행): {type(e).__name__}: {e}")
+
     # 주요 종목 정보 — 종가베팅 브리핑과 별개의 독립 알림(별도 메시지, 09-23 사용자).
     # 실패해도 본편에 영향 없게 분리. 포맷 진화는 hot_stocks.py 에서만.
     if slot in ("1430", "1900"):

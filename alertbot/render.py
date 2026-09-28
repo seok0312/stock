@@ -98,6 +98,7 @@ def _pad(s: str, width: int, align: str = "l") -> str:
 #     오일: 간밤 창은 잡음(IC -0.25~+0.02 불안정). 장중 창(09→15시)은 IC +0.15 로
 #     통념 방향이나 EWY 통제 미검증 → 보류(HANDOFF 미결 7).
 _SIG_LABEL = ((3, "우호"), (1, "약우호"), (0, "중립"), (-2, "신중"), (-99, "관망"))
+LAST_SUMMARY = None          # 직전 section_summary 의 {score,label,timing} — decision.py 용
 
 
 def _perp_of(row):
@@ -237,9 +238,12 @@ def section_summary(win, fl=None, cmp=None, events=None, kr_upjong=None,
                 else:
                     timing = "지금 매수 무방 — 약세는 막판 반등 경향"
 
+    lab = next(l for th, l in _SIG_LABEL if score >= th)
+    # 대시보드 결정 패널용 구조화 사본 (decision.py 가 읽음, 09-29)
+    global LAST_SUMMARY
+    LAST_SUMMARY = {"score": score, "label": lab, "timing": timing}
     if not bits:
         return ""
-    lab = next(l for th, l in _SIG_LABEL if score >= th)
     head = [f"  · <b>종가베팅 신호: {score:+d} ({lab})</b>"]
     if timing:
         head.append(f"  · <b>타이밍: {esc(timing)}</b>")

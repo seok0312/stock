@@ -47,12 +47,52 @@ td.pos{color:var(--pos)} td.neg{color:var(--neg)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media (max-width:760px){.grid2{grid-template-columns:1fr}}
 .overflow{overflow-x:auto}
+/* 결정 패널 (09-29): ①할지·비중 ②타이밍 ③종목 */
+.grid3{display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:14px}
+@media (max-width:900px){.grid3{grid-template-columns:1fr}}
+.dec-big{font-size:26px;font-weight:800;margin:6px 0 2px}
+.dec-sub{color:var(--text-2);font-size:13px}
+.dec-cap{color:var(--text-3);font-size:11.5px;margin-top:8px;line-height:1.45}
+.gauge{height:8px;border-radius:5px;background:var(--border);margin:8px 0 4px;overflow:hidden}
+.gauge i{display:block;height:100%;background:var(--pos);border-radius:5px}
+.tag{display:inline-block;border:1px solid var(--border);border-radius:6px;
+  padding:0 6px;font-size:11.5px;color:var(--text-2);margin-left:6px}
+.tag.hold{color:#199e70;border-color:#199e70}
+.tag.sell{color:var(--pos);border-color:var(--pos)}
+.tag.avoid{color:var(--text-3)}
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>종가베팅 수급 대시보드</h1>
   <div class="sub" id="gen">불러오는 중…</div>
+
+  <div id="decision" style="display:none">
+    <h2>오늘의 종가베팅 판단 <span class="qual" id="dec-time"></span></h2>
+    <div class="grid3">
+      <div class="panel">
+        <b style="font-size:13px">① 할지 말지 · 비중</b>
+        <div class="dec-big" id="dec-score"></div>
+        <div class="dec-sub" id="dec-weight"></div>
+        <div class="gauge"><i id="dec-gauge" style="width:0%"></i></div>
+        <div class="dec-cap">비중 제안: 신호 +3↑=100% · +1~2=70% · 0=40% · -1~-2=20% · -3↓=0%<br>
+        (신호 구간별 후보군 익일시가 수익 +2.2 / +1.0 / -1.6%에 비례한 초안)</div>
+      </div>
+      <div class="panel">
+        <b style="font-size:13px">② 타이밍 — 언제 · 빨리/천천히</b>
+        <div class="dec-sub" style="margin-top:6px" id="dec-timing"></div>
+        <div class="dec-cap">기본 룰: 낮(15시) 진입이 기본, 저녁 이월은 손해<br>
+        · 낮 — 중립 흐름: 14:30 <b>빨리</b> / 강세·약세: 15:20 <b>천천히</b><br>
+        · 저녁(낮을 놓친 경우) — 19:00 빨리, 낮 약세 후 저녁 반전이면 19:30 2차 기회(승률 67%)</div>
+      </div>
+      <div class="panel">
+        <b style="font-size:13px">③ 어떤 종목 — 주도주 · 수급 태그</b>
+        <div id="dec-stocks" style="margin-top:6px;font-size:13px"></div>
+        <div class="dec-cap">태그(당일 순매수 부호): 익일 매도 = 개인+ 외인- 기관+ ·
+        보유 = 개인 -전환·외인 +전환 · 매수 자제 = 개인- 외인+ 기관- · 무태그 = 기본(익일 시가 매도)</div>
+      </div>
+    </div>
+  </div>
 
   <div class="datebar" id="datebar"></div>
 
@@ -89,7 +129,39 @@ const cls = v => v==null ? "" : v > 0 ? "pos" : v < 0 ? "neg" : "";
 
 let DATA=null, day=null, charts={};
 
+async function decision(){
+  try{
+    const d = await (await fetch("decision.json?v="+Date.now())).json();
+    if(d.score==null) return;
+    document.getElementById("dec-time").textContent =
+      "갱신 "+d.updated+" · "+(d.slot_label||d.slot)+" 슬롯 기준";
+    const s=document.getElementById("dec-score");
+    s.textContent = (d.score>0?"+":"")+d.score+" ("+d.score_label+")";
+    s.style.color = d.score>=1 ? "var(--pos)" : d.score<=-1 ? "var(--neg)" : "var(--text-1)";
+    document.getElementById("dec-weight").textContent = "제안 비중: "+d.weight+"%";
+    document.getElementById("dec-gauge").style.width = d.weight+"%";
+    document.getElementById("dec-timing").textContent =
+      d.timing || "타이밍 판정 슬롯 아님 (14:30 · 19:00 알림에서 갱신)";
+    const box=document.getElementById("dec-stocks");
+    const ACT={"갭":["익일 매도","sell"],"손바뀜":["보유","hold"],"회피":["매수 자제","avoid"]};
+    if(d.leaders && d.leaders.length){
+      box.innerHTML = d.leaders.map(x=>{
+        const a = ACT[x.tag];
+        const tag = a ? `<span class="tag ${a[1]}">${a[0]}</span>` : "";
+        const lead = x.lead!=null ? ` <span class="qual">주도 ${x.lead}/20일</span>` : "";
+        return `<div>· <b>${x.name}</b> <span class="${x.chg>0?"pos":"neg"}">`+
+               `${x.chg>0?"+":""}${(x.chg??0).toFixed(1)}%</span>`+
+               ` / ${Math.round(x.amt_eok??0).toLocaleString()}억${lead}${tag}</div>`;
+      }).join("");
+    }else{
+      box.innerHTML = `<span class="qual">주도주 산출 슬롯 아님 — 09:30/14:30/16:30/19:00/20:00 알림에서 갱신</span>`;
+    }
+    document.getElementById("decision").style.display="";
+  }catch(e){ /* decision.json 없으면 패널 숨김 유지 */ }
+}
+
 async function boot(){
+  decision();
   DATA = await (await fetch("closebet_data.json?v="+Date.now())).json();
   document.getElementById("gen").textContent =
     "생성 " + DATA.generated.replace("T"," ").slice(0,16) + " · 텔레그램 브리핑의 상세 화면";
