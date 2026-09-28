@@ -423,6 +423,11 @@ def save_main_anchor(now=None) -> dict:
             px, _, _ = _main_quote(spec["main"])
             if px:
                 prices[spec["name"]] = px
+        elif spec.get("src") == "bond":
+            # 채권 수익률도 앵커에 저장 — 연휴·주말 창의 '전일比 0' 방지(09-27)
+            b = _row_bond(spec)
+            if b.get("end_px") is not None:
+                prices[spec["name"]] = b["end_px"]
     try:
         with open(_ANCHOR_PATH, encoding="utf-8") as f:
             doc = json.load(f)
@@ -576,6 +581,12 @@ def _key_stock_rows(start, end, ex) -> list:
                 row["after_pct"] = _after_pct(spec["sym"], meta, end, ex)
             else:
                 row["proxy"] = "perp"     # 본장 조회 실패 시 기존 표시로 폴백
+        # 주말·연휴 창(>30h): 해외 자산(SOX·DRAM)의 '전일比' 라벨은 마지막 하루치라
+        # 화살표(창 기준)와 어긋남 → 창 변동으로 통일 (KRX 종목은 전일比=마지막
+        # 거래일치라 유지, 괄호 after 가 창 변동을 이미 보여줌). 09-27 사용자.
+        if (end - start) > timedelta(hours=30) and (spec.get("widx") or spec.get("wstock")):
+            row["chg_label"] = None
+            row["after_pct"] = None
         row["name"] = spec["name"]
         c = row.get("chg_pct")
         if not row.get("chg_label"):
@@ -620,15 +631,30 @@ def fetch_window(slot: str, now: datetime | None = None):
                 _attach_main(row, px, ch)
                 row["after_pct"] = _after_pct(spec["sym"], meta, end, ex)
                 # 오일·금(24시간 본장)은 전일比 대신 15:30 앵커 스냅샷 기준으로 재계산
-                # → 퍼프와 같은 잣대. 스냅샷 없으면(주말 직후 등) 전일比 유지.
+                # → 퍼프와 같은 잣대. 스냅샷 없으면(주말 직후 등) 전日比 유지.
+                recalced = False
                 if spec["main"][0] == "mkidx" and px:
                     ap = _anchor_px(spec["name"], start.date())
                     if ap:
                         row["chg_label"] = f"{(px / ap - 1) * 100:+.2f}%"
+                        recalced = True
+                # 주말·연휴 점검 창(>30h)에선 본장 '전일比' 라벨이 마지막 하루치만
+                # 보여줘 화살표(창 기준)와 어긋난다(09-27 실측: 나스닥 🔽인데 +0.4%).
+                # 이때는 창 변동(퍼프)으로 라벨 통일, 괄호(after)는 중복이라 생략.
+                if (end - start) > timedelta(hours=30) and not recalced:
+                    row["chg_label"] = None
+                    row["after_pct"] = None
         elif spec["src"] == "kr":
             row = _row_kr(spec, start, end, ex)
         elif spec["src"] == "bond":
             row = _row_bond(spec)
+            # 연휴·주말 창: 전일比 대신 창 시작일 15:30 앵커(스냅샷) 대비 bp —
+            # 일요일 점검에서 '채권 변동 0' 방지(09-27 사용자). 앵커 없으면 전일比.
+            if (end - start) > timedelta(hours=30) and row.get("end_px") is not None:
+                ay = _anchor_px(spec["name"], start.date())
+                if ay:
+                    bp = (row["end_px"] - ay) * 100
+                    row["chg_bp"], row["chg_pct"] = bp, bp / 100
         else:
             row = None
         if row is None:
