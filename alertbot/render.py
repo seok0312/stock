@@ -493,20 +493,20 @@ def section_leaders(ld, title="🎯 <b>주도주</b>"):
             seg += f" / <i>{esc(r['섹터'])}</i>"
         if r.get("주도일수") is not None:  # 연속성 태그 — 반짝 vs 지속 주도 구분 (09-15)
             seg += f" · <i>주도 {r['주도일수']:.0f}/20일</i>"
-        tag = r.get("수급태그")            # 3주체 수급 태그 → 매매 가이드 (09-23)
+        tag = r.get("수급태그")            # 3주체 수급 태그 → 액션명으로 표시 (09-28)
         if tag:
             try:
                 from leaders import TAG_ACT
-                seg += f" · <b>{esc(tag)}({esc(TAG_ACT.get(tag, ''))})</b>"
+                seg += f" · <b>{esc(TAG_ACT.get(tag, tag))}</b>"
             except ImportError:
                 seg += f" · <b>{esc(tag)}</b>"
         lines.append(seg)
         # 거래원별 순매수 서브라인은 09-11 제거 — 변동률·거래대금만 (수급은 점수에만 반영)
-    # 태그 범례는 맨 아래 (09-23 사용자: 태그명만으론 헷갈림 — 조건을 하단 표기)
+    # 태그 범례는 맨 아래, 줄별 표기 (09-28 사용자 포맷)
     if any(r.get("수급태그") for r in ld["rows"]):
         try:
             from leaders import TAG_LEGEND
-            lines.append(f"  <i>{esc(TAG_LEGEND)}</i>")
+            lines.append("\n  <i>" + esc(TAG_LEGEND).replace("\n", "</i>\n  <i>") + "</i>")
         except ImportError:
             pass
     return "\n".join(lines)

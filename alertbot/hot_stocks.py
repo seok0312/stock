@@ -159,7 +159,7 @@ def build(now=None) -> str | None:
     sec += [_row_line(r, now, seen) for r in rows_of(big)] or ["  · 없음"]
     parts.append("\n".join(sec))
 
-    sec = ["\n🎯 <b>주도주 10</b> <i>(시총구간 문턱 × 거래대금)</i>"]
+    sec = ["\n🎯 <b>주도주 10</b>"]
     try:
         import leaders
         ld = leaders.fetch_leaders(top=10)
@@ -173,8 +173,7 @@ def build(now=None) -> str | None:
                 extra.append(f"주도 {x['주도일수']:.0f}/20일")
             if x.get("수급태그"):
                 from leaders import TAG_ACT
-                extra.append(f"<b>{esc(x['수급태그'])}"
-                             f"({esc(TAG_ACT.get(x['수급태그'], ''))})</b>")
+                extra.append(f"<b>{esc(TAG_ACT.get(x['수급태그'], x['수급태그']))}</b>")
             if extra:
                 first, *rest = line.split("\n")
                 line = "\n".join([first + " · " + " · ".join(extra)] + rest)
@@ -182,14 +181,13 @@ def build(now=None) -> str | None:
     except Exception as e:
         sec.append(f"  · 주도주 계산 실패: {type(e).__name__}")
     parts.append("\n".join(sec))
-    # 태그 범례 — 맨 아래 (09-23 사용자: 태그명만으론 헷갈림)
-    if "수급태그" in "".join(parts) or any(
-            k in "".join(parts) for k in ("갭(", "손바뀜(", "회피(")):
-        try:
-            from leaders import TAG_LEGEND
-            parts.append(f"\n<i>{esc(TAG_LEGEND)}</i>")
-        except ImportError:
-            pass
+    # 태그 범례 — 맨 아래, 줄별 표기 (09-28 사용자 포맷)
+    try:
+        from leaders import TAG_ACT, TAG_LEGEND
+        if any(f"<b>{a}</b>" in p for a in TAG_ACT.values() for p in parts):
+            parts.append("\n<i>" + esc(TAG_LEGEND).replace("\n", "</i>\n<i>") + "</i>")
+    except ImportError:
+        pass
     return "\n".join(parts)
 
 
