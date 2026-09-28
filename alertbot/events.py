@@ -768,14 +768,15 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
     ind_end = now + timedelta(hours=48)
     earn_end = now + timedelta(days=7)
     cand, n_earn = [], 0
-    for e in ahead_raw:
+    # 시간순 순회 — 캡(n_earn)이 수집 순서가 아니라 임박한 일정부터 채워지게 (09-28)
+    for e in sorted(ahead_raw, key=lambda x: x["when"]):
         high = e.get("vol") == "HIGH"
         if only_high and not high:
             continue
         if e.get("country") not in ("US", "KR", "CN"):   # 코스피에 직접 닿는 곳만
             continue
         if e.get("src") in ("us_earnings", "kr_ipo", "holidays"):
-            if e["when"] > earn_end or n_earn >= 4:
+            if e["when"] > earn_end or n_earn >= 6:
                 continue
             n_earn += 1
         elif e["when"] > ind_end:
@@ -784,13 +785,17 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
     # 같은 시각·같은 나라는 한 번의 발표다(고용보고서 = 비농업고용 + 시간당임금 + 실업률).
     # 넷을 다 실으면 네 줄이 같은 사건으로 채워지므로 헤드라인 하나만 남긴다.
     # 헤드라인은 (MOM)/(YOY) 꼬리표가 없는 쪽으로 본다.
+    # 단 상장·실적·휴장은 같은 시각이라도 별개 사건 — 이름까지 키에 넣는다
+    # (09-28 사용자: 같은 날 09:00 동시 상장 2건 중 글로벌테크놀로지가 삼켜짐).
     def _headline(c):
         e = c[3]
         return ("(" not in (e.get("name_kr") or ""),   # 꼬리표 없는 헤드라인 우선
                 not c[0])                              # 그다음 중요도
     head = {}
     for c in cand:
-        k = (c[3]["when"], c[3].get("country"))
+        k = (c[3]["when"], c[3].get("country"),
+             c[3].get("name") if c[3].get("src") in ("us_earnings", "kr_ipo",
+                                                     "holidays") else "")
         if k not in head or _headline(c) > _headline(head[k]):
             head[k] = c
     cand = list(head.values())
