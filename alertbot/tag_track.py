@@ -116,13 +116,14 @@ def evaluate() -> int:
         print("[evaluate] 기록 없음")
         return 0
     pend = [r for r in recs if r.get("close") and
-            (r.get("r_o1") is None or r.get("r_c5") is None)]
+            (r.get("r_o1") is None or r.get("r_c5") is None
+             or r.get("r_c10") is None)]
     by_code: dict = {}
     for r in pend:
         by_code.setdefault(r["code"], []).append(r)
     n = 0
     for code, rs in by_code.items():
-        px = {d: (o, c) for d, o, c in _daily_px(code, pages=2)}
+        px = {d: (o, c) for d, o, c in _daily_px(code, pages=2)}  # 20일 커버
         for r in rs:
             if r["date"] not in tdays:
                 continue
@@ -136,6 +137,11 @@ def evaluate() -> int:
                 d5 = px.get(tdays[i + 5])
                 if d5:
                     r["r_c5"] = round((d5[1] / r["close"] - 1) * 100, 2)
+                    n += 1
+            if r.get("r_c10") is None and i + 10 < len(tdays):
+                dx = px.get(tdays[i + 10])
+                if dx:
+                    r["r_c10"] = round((dx[1] / r["close"] - 1) * 100, 2)
                     n += 1
         time.sleep(0.05)
     tmp = PATH + ".tmp"
@@ -170,6 +176,9 @@ def report():
         if c5:
             seg += (f" | D+5 n={len(c5)} 평균 {sum(c5)/len(c5):+.2f}%"
                     f" 승률 {sum(v > 0 for v in c5)/len(c5)*100:.0f}%")
+        c10 = [r["r_c10"] - COST for r in rs if r.get("r_c10") is not None]
+        if c10:
+            seg += f" | D+10 n={len(c10)} 평균 {sum(c10)/len(c10):+.2f}%"
         print(seg)
 
 
