@@ -116,8 +116,8 @@ def evaluate() -> int:
         print("[evaluate] 기록 없음")
         return 0
     pend = [r for r in recs if r.get("close") and
-            (r.get("r_o1") is None or r.get("r_c5") is None
-             or r.get("r_c10") is None)]
+            (r.get("r_o1") is None or r.get("r_c1") is None
+             or r.get("r_c5") is None or r.get("r_c10") is None)]
     by_code: dict = {}
     for r in pend:
         by_code.setdefault(r["code"], []).append(r)
@@ -132,6 +132,11 @@ def evaluate() -> int:
                 nx = px.get(tdays[i + 1])
                 if nx:
                     r["r_o1"] = round((nx[0] / r["close"] - 1) * 100, 2)
+                    n += 1
+            if r.get("r_c1") is None and i + 1 < len(tdays):
+                d1 = px.get(tdays[i + 1])
+                if d1:
+                    r["r_c1"] = round((d1[1] / r["close"] - 1) * 100, 2)
                     n += 1
             if r.get("r_c5") is None and i + 5 < len(tdays):
                 d5 = px.get(tdays[i + 5])
@@ -176,9 +181,12 @@ def report():
         if c5:
             seg += (f" | D+5 n={len(c5)} 평균 {sum(c5)/len(c5):+.2f}%"
                     f" 승률 {sum(v > 0 for v in c5)/len(c5)*100:.0f}%")
+        c1 = [r["r_c1"] - COST for r in rs if r.get("r_c1") is not None]
+        if c1:
+            seg += f" | 익일종가 평균 {sum(c1)/len(c1):+.2f}%"
         c10 = [r["r_c10"] - COST for r in rs if r.get("r_c10") is not None]
         if c10:
-            seg += f" | D+10 n={len(c10)} 평균 {sum(c10)/len(c10):+.2f}%"
+            seg += f" | D+10 평균 {sum(c10)/len(c10):+.2f}%"
         print(seg)
 
 
