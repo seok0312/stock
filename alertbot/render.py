@@ -142,9 +142,16 @@ def section_summary(win, fl=None, cmp=None, events=None, kr_upjong=None,
     if ewy is not None:
         score += (3 if ewy >= 1.0 else 2 if ewy >= 0.3 else 0) \
             - (3 if ewy <= -1.0 else 2 if ewy <= -0.3 else 0)
-    qqq = _perp_of(next((r for r in win.get("rows") or [] if r["name"] == "나스닥"), None))
-    if qqq is not None:
-        score += 1 if qqq >= 0.5 else (-1 if qqq <= -0.5 else 0)
+    nas_row = next((r for r in win.get("rows") or [] if r["name"] == "나스닥"), None)
+    # 09-29 교체(사용자 지적): 간밤 본장 포함 전체 창은 죽은 정보와 섞여 상쇄 —
+    # 아시아 시간대 선물 구간(당일 06:00→현재, ±0.3%)을 우선, 없으면 기존 창 폴백.
+    asia = (nas_row or {}).get("asia_pct")
+    if asia is not None:
+        score += 1 if asia >= 0.3 else (-1 if asia <= -0.3 else 0)
+    else:
+        qqq = _perp_of(nas_row)
+        if qqq is not None:
+            score += 1 if qqq >= 0.5 else (-1 if qqq <= -0.5 else 0)
 
     # 3) 거래대금
     a = (cmp.get("amount") or (fl or {}).get("ref") or {})

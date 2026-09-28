@@ -638,6 +638,17 @@ def fetch_window(slot: str, now: datetime | None = None):
                     if ap:
                         row["chg_label"] = f"{(px / ap - 1) * 100:+.2f}%"
                         recalced = True
+                # 나스닥: 아시아 시간대 선물 구간(당일 06:00→끝) 변동을 신호용으로
+                # 별도 보존 — 간밤 본장 구간은 코스피 갭에 이미 반영된 죽은 정보라
+                # 전체 창은 신호가 상쇄된다(09-29 검증: 아시아 IC T1 +0.22/T2 +0.25,
+                # 간밤 -0.14, 전체 +0.01). 표시는 기존 그대로, 점수만 이걸 쓴다.
+                if spec.get("sym") == "QQQ/USDT:USDT":
+                    a6 = end.replace(hour=6, minute=0, second=0, microsecond=0)
+                    if end > a6 + timedelta(minutes=20):
+                        p0 = _close_at(spec["sym"], a6, ex)
+                        p1 = _close_at(spec["sym"], end, ex)
+                        if p0 and p1:
+                            row["asia_pct"] = (p1 / p0 - 1) * 100
                 # 주말·연휴 점검 창(>30h)에선 본장 '전일比' 라벨이 마지막 하루치만
                 # 보여줘 화살표(창 기준)와 어긋난다(09-27 실측: 나스닥 🔽인데 +0.4%).
                 # 이때는 창 변동(퍼프)으로 라벨 통일, 괄호(after)는 중복이라 생략.
