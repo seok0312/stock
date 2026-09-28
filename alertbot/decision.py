@@ -35,6 +35,7 @@ def save(win, summary: dict | None, leaders: dict | None, now=None) -> str | Non
         rows.append({"name": x.get("종목명"), "chg": x.get("등락률"),
                      "amt_eok": x.get("거래대금"), "tag": x.get("수급태그"),
                      "lead": x.get("주도일수")})
+    kr = next((r for r in win.get("rows") or [] if r.get("name") == "코스피"), {})
     doc = {
         "updated": now.strftime("%m/%d %H:%M"),
         "slot": win.get("slot"), "slot_label": win.get("label"),
@@ -48,4 +49,12 @@ def save(win, summary: dict | None, leaders: dict | None, now=None) -> str | Non
     path = os.path.join(out_dir, "decision.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, ensure_ascii=False)
+    # 전방검증 로그(09-29 사용자: 비중·타이밍·종목 실측 축적) — tag_track 이 채점.
+    log = dict(doc)
+    log["date"] = now.strftime("%Y%m%d")
+    log["kr_flow"] = kr.get("chg_pct")        # 타이밍 판정 입력(코스피 흐름) 보존
+    log.pop("leaders", None)                  # 종목 채점은 tag_picks 가 담당(중복 방지)
+    with open(os.path.join(HERE, "data", "decision_log.jsonl"), "a",
+              encoding="utf-8") as f:
+        f.write(json.dumps(log, ensure_ascii=False) + "\n")
     return path

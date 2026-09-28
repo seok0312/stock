@@ -158,6 +158,76 @@ def evaluate() -> int:
     return n
 
 
+def evaluate_decisions() -> int:
+    """decision_log 채점(09-29) — ①비중: 그날 과열 종목 평균 익일시가 수익(t1)
+    ②타이밍: EWY 퍼프 14:30·15:30 → 익일 09:00 수익(r_1430/r_1530).
+    종목 채점은 tag_picks 가 담당. 완료 필드는 재계산하지 않는다."""
+    path = os.path.join(HERE, "data", "decision_log.jsonl")
+    recs = []
+    try:
+        for line in open(path, encoding="utf-8"):
+            try:
+                recs.append(json.loads(line))
+            except ValueError:
+                continue
+    except FileNotFoundError:
+        return 0
+    # ① 비중 타깃: tag_picks 날짜별 r_o1 평균
+    day_ret = {}
+    try:
+        agg = {}
+        for line in open(PATH, encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("r_o1") is not None:
+                agg.setdefault(r["date"], []).append(r["r_o1"])
+        day_ret = {d: sum(v) / len(v) for d, v in agg.items() if len(v) >= 3}
+    except FileNotFoundError:
+        pass
+    # ② 타이밍: 필요한 날짜만 EWY 30분봉 한 번에
+    need = sorted({r["date"] for r in recs
+                   if r.get("slot") == "1430" and r.get("r_1430") is None})
+    grid = {}
+    if need:
+        try:
+            import quotes
+            ex = quotes.exchange()
+            since = int(datetime.strptime(need[0], "%Y%m%d")
+                        .replace(tzinfo=KST).timestamp() * 1000)
+            oh = ex.fetch_ohlcv("EWY/USDT:USDT", "30m", since=since, limit=1500)
+            for c in oh or []:
+                t = datetime.fromtimestamp(c[0] / 1000, tz=KST)
+                grid[(t.strftime("%Y%m%d"), t.strftime("%H:%M"))] = c[1]
+        except Exception:
+            grid = {}
+    tdays = sorted({d for d, _ in grid})
+    n = 0
+    for r in recs:
+        d = r.get("date")
+        if r.get("t1") is None and d in day_ret:
+            r["t1"] = round(day_ret[d], 3)
+            n += 1
+        if r.get("slot") == "1430" and r.get("r_1430") is None and d in tdays:
+            i = tdays.index(d)
+            if i + 1 < len(tdays):
+                p14, p15 = grid.get((d, "14:30")), grid.get((d, "15:30"))
+                n9 = grid.get((tdays[i + 1], "09:00"))
+                if p14 and p15 and n9:
+                    r["r_1430"] = round((n9 / p14 - 1) * 100, 3)
+                    r["r_1530"] = round((n9 / p15 - 1) * 100, 3)
+                    n += 1
+    if n:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for r in recs:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        os.replace(tmp, path)
+    print(f"[evaluate_decisions] {n}건 채점 (누적 {len(recs)}건)")
+    return n
+
+
 def report():
     recs = []
     for line in open(PATH, encoding="utf-8"):
@@ -205,5 +275,6 @@ if __name__ == "__main__":
         record()
     if a.evaluate:
         evaluate()
+        evaluate_decisions()
     if a.report:
         report()

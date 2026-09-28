@@ -132,10 +132,52 @@ def attn_section():
             f"4주 축적 후 관심도 팩터 백테스트 재실행 예정</p>")
 
 
+def decision_sections():
+    """비중·타이밍 룰 전방검증 카드 (decision_log, 09-29)."""
+    recs = _load(os.path.join(DATA, "decision_log.jsonl"))
+    byd = {}
+    for r in recs:                                # 날짜별 대표 = 마감(1530) 우선
+        if r.get("t1") is None:
+            continue
+        if r["date"] not in byd or r.get("slot") == "1530":
+            byd[r["date"]] = r
+    w_html = "<p>채점된 날 없음 (매일 16:10 자동 채점)</p>"
+    if byd:
+        rows, cum_rule, cum_full = [], 1.0, 1.0
+        for d in sorted(byd):
+            r = byd[d]
+            cum_rule *= 1 + (r["t1"] * r.get("weight", 100) / 100) / 100
+            cum_full *= 1 + r["t1"] / 100
+        for lo, hi, lab in ((3, 99, "+3↑"), (1, 2, "+1~2"), (0, 0, "0"),
+                            (-2, -1, "-1~-2"), (-99, -3, "-3↓")):
+            g = [r["t1"] for r in byd.values() if lo <= (r.get("score") or 0) <= hi]
+            if g:
+                wr = sum(x > 0 for x in g) / len(g) * 100
+                rows.append(f"<tr><td>{lab}</td><td>{len(g)}</td>"
+                            f"<td>{sum(g)/len(g):+.2f}%</td><td>{wr:.0f}%</td></tr>")
+        w_html = (f"<p>{len(byd)}일 채점 · 누적: 비중 룰 {(cum_rule-1)*100:+.1f}% vs "
+                  f"고정 100% {(cum_full-1)*100:+.1f}% <span class=n>(백테스트 113일: "
+                  f"룰 +60% · MDD -3.9% vs 고정 +92% · MDD -15.8%)</span></p>"
+                  "<table><tr><th>신호</th><th>n</th><th>다음날 후보 평균</th><th>승률</th></tr>"
+                  + "".join(rows) + "</table>")
+    tm = [r for r in recs if r.get("r_1430") is not None and r.get("kr_flow") is not None]
+    t_html = "<p>채점된 날 없음</p>"
+    if tm:
+        rule = [r["r_1430"] if abs(r["kr_flow"]) < 0.3 else r["r_1530"] for r in tm]
+        a14 = [r["r_1430"] for r in tm]
+        a15 = [r["r_1530"] for r in tm]
+        t_html = (f"<p>1430 권고 {len(tm)}일 채점 (EWY, 진입→익일 09시) · "
+                  f"룰 추종 {sum(rule)/len(rule):+.3f}% vs 항상14:30 {sum(a14)/len(a14):+.3f}%"
+                  f" vs 항상15:30 {sum(a15)/len(a15):+.3f}% "
+                  f"<span class=n>(백테스트 138일: +0.649 vs +0.574 vs +0.613%)</span></p>")
+    return w_html, t_html
+
+
 def build():
     now = datetime.now(KST)
     hy = "".join(f"<tr><td>{h}</td><td class=n>{s}</td></tr>" for h, s in HYPOTHESES)
     ru = "".join(f"<tr><td>{k}</td><td class=n>{v}</td></tr>" for k, v in RULES)
+    w_html, t_html = decision_sections()
     html = f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width, initial-scale=1">
 <title>검증 현황판</title><style>
@@ -168,10 +210,16 @@ th {{ color:var(--sub); font-weight:normal; font-size:12px }}
 <div class=card><h2>④ 관심도 팩터 데이터 축적 <span class=n>(attention)</span></h2>
 {attn_section()}</div>
 
-<div class=card><h2>⑤ 관찰 등급 가설 <span class=n>(채택 보류 — 조건 충족 시 재검증)</span></h2>
+<div class=card><h2>⑤ 비중 룰 추적 <span class=n>(신호점수 → 비중, decision_log)</span></h2>
+{w_html}</div>
+
+<div class=card><h2>⑥ 타이밍 룰 추적 <span class=n>(중립=14:30 빨리 / 그 외=15:20)</span></h2>
+{t_html}</div>
+
+<div class=card><h2>⑦ 관찰 등급 가설 <span class=n>(채택 보류 — 조건 충족 시 재검증)</span></h2>
 <table>{hy}</table></div>
 
-<div class=card><h2>⑥ 확정 룰 스냅샷</h2>
+<div class=card><h2>⑧ 확정 룰 스냅샷</h2>
 <table>{ru}</table></div>
 
 <p class=n>종가베팅 대시보드: <a href="closebet.html" style="color:var(--acc)">closebet.html</a></p>
