@@ -212,6 +212,9 @@ def _us_earnings(start: datetime, end: datetime) -> list:
             if sym not in EARN_ALWAYS and not (cap and cap >= EARN_MIN_CAP):
                 continue
             t = x.get("time") or ""
+            # time-not-supplied = 기업 미공표 → 나스닥 추정 잠정일 (인베스팅 등과
+            # 며칠 어긋날 수 있음, 09-30 사용자 발견). 확정되면 표기 자동 제거.
+            tent = "" if ("pre-market" in t or "after-hours" in t) else " ·잠정일"
             base = datetime.combine(d, datetime.min.time()).replace(tzinfo=KST)
             when = (base + timedelta(hours=21) if "pre-market" in t
                     else base + timedelta(days=1, hours=5, minutes=30))
@@ -220,7 +223,7 @@ def _us_earnings(start: datetime, end: datetime) -> list:
             eps = (x.get("epsForecast") or "").strip()
             out.append({
                 "when": when, "country": "US", "sym": sym,
-                "name": f"{sym} 실적(EPS)", "name_kr": f"{sym} 실적(EPS)",
+                "name": f"{sym} 실적(EPS){tent}", "name_kr": f"{sym} 실적(EPS){tent}",
                 "actual": None, "consensus": None, "previous": None, "unit": None,
                 "vol": "HIGH", "dev": None, "better": None, "speech": False,
                 "tags": {"실적"}, "src": "us_earnings",
