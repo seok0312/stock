@@ -43,7 +43,12 @@ tag_track 전방검증(4출구 채점)으로 축적 중 — 한 달 뒤 갭 단�
 
 ## 0. 현재 상태 — 전부 자동으로 돌고 있다
 
-- **일정 캘린더(09-30 신설, calendar_dash.py)**: closebet.html 에 향후 14일 —
+- **일정 캘린더(09-30 신설, calendar_dash.py)**: +BTC 일정(같은 날 추가) —
+  @provider("btc"): 반감기(5차 예상 2028-04-15, SSS — 근접 시 날짜 갱신 필요),
+  CME 비트코인 선물 만기(매월 마지막 금요일→KST 토 01:00, MEDIUM = 14일 창에서만).
+  COIN·MSTR 를 EARN_ALWAYS 화이트리스트에 추가(시총 게이트 $200B 미달) —
+  브리핑 발표예정에도 분기 1회 노출됨. 비정기(ETF 결정 등)는 events_custom.json.
+  ※ custom 경로는 data/events.json 아니라 **events_custom.json** (독스트링 낡음). closebet.html 에 향후 14일 —
   지표·실적·IPO·휴장·만기(HIGH 전부 + KR/US/CN MEDIUM, 일반 연준연설 제외).
   07:30·17:30 갱신 → calendar.json.
 - **검증 현황판(09-28 신설, verify_dash.py)**: http://165.22.108.193/verify.html —

@@ -21,9 +21,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = "/var/www/html"
 
 TYPE = {"fxstreet": "지표", "us_earnings": "실적", "kr_ipo": "IPO",
-        "holidays": "휴장", "kr_expiry": "만기", "custom": "기타"}
+        "holidays": "휴장", "kr_expiry": "만기", "btc": "코인", "custom": "기타"}
 SSS_EARN = {"AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "AMZN", "META", "TSLA",
-            "AVGO", "MU", "TSM", "AMD"}
+            "AVGO", "MU", "TSM", "AMD", "COIN", "MSTR"}   # COIN·MSTR = 크립토 심리 대리
 _MOMYOY = re.compile(r"\((MOM|YOY|QOQ)\)")
 
 
@@ -34,6 +34,8 @@ def is_sss(e) -> bool:
     c = e.get("country")
     if src in ("holidays", "kr_expiry"):
         return True
+    if src == "btc":
+        return e.get("vol") == "HIGH"          # 반감기만 SSS, CME 만기는 일반
     if src == "us_earnings":
         return (raw.split() or [""])[0] in SSS_EARN
     if src == "custom":
@@ -88,7 +90,7 @@ def build(now=None) -> str:
                 continue
             if vol == "LOW":
                 continue
-            if vol != "HIGH" and e.get("country") not in ("KR", "US", "CN"):
+            if vol != "HIGH" and e.get("country") not in ("KR", "US", "CN", "BTC"):
                 continue
             if e.get("speech") and vol != "HIGH":
                 continue          # 연준 위원 연설 도배 방지 — 파월급(HIGH)만

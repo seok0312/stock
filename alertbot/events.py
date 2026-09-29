@@ -41,7 +41,7 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 COUNTRIES = ("US", "KR", "CN", "JP", "EMU")
 VOLS = ("MEDIUM", "HIGH")          # LOW 는 가격을 거의 안 움직여 노이즈다
 FLAG = {"US": "🇺🇸", "KR": "🇰🇷", "CN": "🇨🇳", "JP": "🇯🇵",
-        "EMU": "🇪🇺", "DE": "🇩🇪", "GB": "🇬🇧"}
+        "EMU": "🇪🇺", "DE": "🇩🇪", "GB": "🇬🇧", "BTC": "₿"}
 
 # ── 이벤트명 → (한글표기, 태그). 위에서부터 첫 매치를 쓴다.
 #    태그가 링크의 유일한 기준이다. 새 지표가 나와도 태그만 맞으면 자동 연결된다.
@@ -119,7 +119,8 @@ SECTOR_TAGS = {
 # 미국 실적: 시총이 이 이상이거나 아래 목록에 들면 한국 개장에 영향이 있다고 본다.
 # 반도체·AI 체인은 시총이 기준에 못 미쳐도 삼성전자·SK하이닉스를 직접 움직인다.
 EARN_MIN_CAP = 200e9
-EARN_ALWAYS = {"NVDA", "AVGO", "TSM", "MU", "AMAT", "LRCX", "KLAC", "ASML",
+EARN_ALWAYS = {"COIN", "MSTR",   # 크립토 심리 대리 (09-30 사용자, 시총 게이트 미달이라 명시)
+               "NVDA", "AVGO", "TSM", "MU", "AMAT", "LRCX", "KLAC", "ASML",
                "INTC", "AMD", "ORCL", "DELL", "SMCI", "MRVL", "WDC", "STX"}
 NASDAQ_EARN = "https://api.nasdaq.com/api/calendar/earnings?date={d}"
 
@@ -437,6 +438,42 @@ def _kr_expiry(start: datetime, end: datetime) -> list:
             })
         # 다음 달 1일로
         d = (first + timedelta(days=32)).replace(day=1)
+    return out
+
+
+@provider("btc")
+def _btc(start: datetime, end: datetime) -> list:
+    """비트코인 정기 일정 — 전부 규칙 기반 (09-30 사용자).
+
+    반감기: 5차 예상 2028년 봄(블록 1,050,000 도달 시점 — 해시레이트 따라 ±수주).
+    CME 선물 만기: 매월 마지막 금요일 런던 16:00 = KST 토 01:00 근사 — 만기 주간
+    변동성 이벤트라 MEDIUM(캘린더 전체 목록엔 뜨고 브리핑 HIGH 필터엔 안 걸림).
+    비정기(ETF 결정·업그레이드 등)는 events_custom.json 으로.
+    """
+    import calendar as _cal
+    out = []
+    halving = datetime(2028, 4, 15, 9, 0, tzinfo=KST)     # 예상 — 근접 시 갱신
+    if start <= halving <= end:
+        out.append({"when": halving, "country": "BTC", "name": "비트코인 5차 반감기(예상)",
+                    "name_kr": "비트코인 5차 반감기(예상)", "actual": None,
+                    "consensus": None, "previous": None, "unit": None, "vol": "HIGH",
+                    "dev": None, "better": None, "speech": False, "tags": set(),
+                    "src": "btc", "note": "블록 1,050,000 기준 — ±수주 오차"})
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        last = _cal.monthrange(y, m)[1]
+        d = datetime(y, m, last, tzinfo=KST)
+        d -= timedelta(days=(d.weekday() - 4) % 7)         # 마지막 금요일
+        when = d.replace(hour=23, minute=0) + timedelta(hours=2)   # KST 토 01:00
+        if start <= when <= end:
+            out.append({"when": when, "country": "BTC", "name": "CME 비트코인 선물 만기",
+                        "name_kr": "CME 비트코인 선물 만기", "actual": None,
+                        "consensus": None, "previous": None, "unit": None,
+                        "vol": "MEDIUM", "dev": None, "better": None, "speech": False,
+                        "tags": set(), "src": "btc", "note": None})
+        m += 1
+        if m == 13:
+            y, m = y + 1, 1
     return out
 
 
