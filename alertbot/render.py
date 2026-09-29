@@ -137,11 +137,18 @@ def section_summary(win, fl=None, cmp=None, events=None, kr_upjong=None,
     # 자산별 개별 줄, '변동:' 접두 없이 (09-22 사용자)
     for r in big[:3]:
         bits.append(f"{esc(r['name'])} {r['chg_pct']:+.1f}%{'★' * r['stars']}")
-    # EWY 퍼프(주 신호) + QQQ 퍼프 — 창 기준, v2 가중치
-    ewy = _perp_of(next((r for r in win.get("rows") or [] if r["name"] == "코스피"), None))
-    if ewy is not None:
-        score += (3 if ewy >= 1.0 else 2 if ewy >= 0.3 else 0) \
-            - (3 if ewy <= -1.0 else 2 if ewy <= -0.3 else 0)
+    # KR 성분 재설계(09-29 사용자 아키텍처): 09~15:30 은 코스피 실측(장중=지수
+    # 등락, 그 외 슬롯=마지막 마감 등락), 깜깜이 구간(08~09·15:30~20)의 정보는
+    # 나스닥 아시아 구간(아래 ±1)이 담당. 저녁 EWY 는 나스닥 추종(상관 +0.74,
+    # QQQ 통제 잔차 IC +0.03)일 뿐 한국 고유 정보가 없어 점수에서 제거.
+    # EWY 창은 본장 조회 실패 시 폴백으로만. (코스피 등락↔EWY 창 상관 +0.98)
+    kr0 = next((r for r in win.get("rows") or [] if r["name"] == "코스피"), None) or {}
+    kr = kr0.get("chg_pct") if kr0.get("idx_star") else kr0.get("main_pct")
+    if kr is None:
+        kr = _perp_of(kr0)
+    if kr is not None:
+        score += (3 if kr >= 1.0 else 2 if kr >= 0.3 else 0) \
+            - (3 if kr <= -1.0 else 2 if kr <= -0.3 else 0)
     nas_row = next((r for r in win.get("rows") or [] if r["name"] == "나스닥"), None)
     # 09-29 교체(사용자 지적): 간밤 본장 포함 전체 창은 죽은 정보와 섞여 상쇄 —
     # 아시아 시간대 선물 구간(당일 06:00→현재, ±0.3%)을 우선, 없으면 기존 창 폴백.
