@@ -42,26 +42,29 @@ def _num(s):
 
 
 def fetch_quant(pages: int = 1) -> list:
-    """NXT 거래상위 [{code, name, price, chg_pct, amt_eok}] — 거래대금 내림차순."""
+    """NXT 거래상위 [{code, name, price, chg_pct, amt_eok}] — 거래대금 내림차순.
+
+    소스: 키움 ka10032 거래대금상위(stex_tp=2 = NXT 체결분만, 100행).
+    원래 네이버 PC 페이지(nxt_sise_quant) 스크래핑이었는데 2026-09-30 개편
+    (React SPA)으로 서버사이드 HTML 이 비어 사망 — 09-30 사용자 발견 후 교체.
+    flu_rt 는 % 그대로, trde_prica 는 백만원(/100=억). 키움 인증 필요."""
+    try:
+        import kr_sectors as krs
+        kc = krs._kc()
+        d, _ = kc.request("ka10032",
+                          {"mrkt_tp": "000", "mang_stk_incls": "1", "stex_tp": "2"},
+                          endpoint="/api/dostk/rkinfo")
+    except Exception:
+        return []
     out = []
-    for p in range(1, pages + 1):
-        try:
-            r = requests.get(QUANT, headers=UA, params={"page": p}, timeout=20)
-            r.encoding = "euc-kr"
-        except Exception:
-            break
-        rows = re.findall(
-            r'<a href="/item/main\.naver\?code=(\d{6})"[^>]*>([^<]+)</a>(.*?)</tr>',
-            r.text, re.S)
-        for code, name, body in rows:
-            cells = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", c)).strip()
-                     for c in re.findall(r"<td[^>]*>(.*?)</td>", body, re.S)]
-            # 순서: 현재가, 전일비, 등락률, 거래량, 거래대금(백만), 매수호가, ...
-            if len(cells) < 5:
-                continue
-            out.append({"code": code, "name": name.strip(),
-                        "price": _num(cells[0]), "chg_pct": _num(cells[2]),
-                        "amt_eok": (_num(cells[4]) or 0) / 100})
+    for r in d.get("trde_prica_upper") or []:
+        code = str(r.get("stk_cd") or "")[:6]
+        chg, amt = _num(r.get("flu_rt")), _num(r.get("trde_prica"))
+        if not code or chg is None:
+            continue
+        out.append({"code": code, "name": (r.get("stk_nm") or "").strip(),
+                    "price": _num(r.get("cur_prc")), "chg_pct": chg,
+                    "amt_eok": (amt or 0) / 100})
     return out
 
 
