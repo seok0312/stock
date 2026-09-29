@@ -95,6 +95,11 @@ td.pos{color:var(--pos)} td.neg{color:var(--neg)}
     </div>
   </div>
 
+  <div id="calwrap" style="display:none">
+    <h2>📅 향후 일정 <span class="qual" id="cal-gen"></span></h2>
+    <div class="panel" id="calendar" style="max-height:400px;overflow-y:auto"></div>
+  </div>
+
   <div class="datebar" id="datebar"></div>
 
   <h2>세션별 순매수 <span class="qual">(억원 · 키움 KRX/NXT 스냅샷 차분)</span></h2>
@@ -161,8 +166,30 @@ async function decision(){
   }catch(e){ /* decision.json 없으면 패널 숨김 유지 */ }
 }
 
+async function calendar(){
+  try{
+    const c = await (await fetch("calendar.json?v="+Date.now())).json();
+    if(!c.days || !c.days.length) return;
+    document.getElementById("cal-gen").textContent =
+      "경제지표·실적·IPO·휴장·만기 · 14일 · 갱신 "+c.generated;
+    const ICON = {"지표":"📊","실적":"💰","IPO":"🔔","휴장":"🏖","만기":"⚠️","기타":"📌"};
+    document.getElementById("calendar").innerHTML = c.days.map(d=>{
+      const head = `<div style="font-weight:700;margin:10px 0 4px">`+
+        `${d.date.slice(4,6)}/${d.date.slice(6,8)} (${d.wd})</div>`;
+      const rows = d.items.map(x=>{
+        const nm = x.hi ? `<b>${x.name}</b> ★` : x.name;
+        const val = x.val ? ` <span class="qual">${x.val}</span>` : "";
+        return `<div style="padding:2px 0 2px 8px">${ICON[x.type]||"📌"} `+
+               `<span class="qual">${x.t}</span> ${nm}${val}</div>`;
+      }).join("");
+      return head + rows;
+    }).join("");
+    document.getElementById("calwrap").style.display="";
+  }catch(e){ /* calendar.json 없으면 숨김 */ }
+}
+
 async function boot(){
-  decision();
+  decision(); calendar();
   DATA = await (await fetch("closebet_data.json?v="+Date.now())).json();
   document.getElementById("gen").textContent =
     "생성 " + DATA.generated.replace("T"," ").slice(0,16) + " · 텔레그램 브리핑의 상세 화면";
