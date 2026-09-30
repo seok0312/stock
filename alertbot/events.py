@@ -43,6 +43,33 @@ VOLS = ("MEDIUM", "HIGH")          # LOW 는 가격을 거의 안 움직여 노�
 FLAG = {"US": "🇺🇸", "KR": "🇰🇷", "CN": "🇨🇳", "JP": "🇯🇵",
         "EMU": "🇪🇺", "DE": "🇩🇪", "GB": "🇬🇧", "BTC": "₿"}
 
+# ── SSS 등급 (09-30 사용자) — 대시보드 캘린더·텔레그램 브리핑 공용 단일 원천 ──
+SSS_EARN = {"AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "AMZN", "META", "TSLA",
+            "AVGO", "MU", "TSM", "AMD", "COIN", "MSTR"}
+
+
+def is_sss(e) -> bool:
+    """진짜 중요한 일정만: FOMC 결정·미 고용·미 CPI·BoJ·빅테크 실적·휴장·만기·
+    custom HIGH·BTC 반감기. 중국·유럽 지표는 제외(사용자)."""
+    src_ = e.get("src")
+    nm = e.get("name_kr") or e.get("name") or ""
+    raw = e.get("name") or ""
+    c = e.get("country")
+    if src_ in ("holidays", "kr_expiry"):
+        return True
+    if src_ == "us_earnings":
+        return (raw.split() or [""])[0] in SSS_EARN
+    if src_ == "custom":
+        return e.get("vol") == "HIGH"
+    if src_ == "btc":
+        return e.get("vol") == "HIGH"
+    if src_ == "fxstreet":
+        if c == "US" and any(k in nm for k in ("기준금리 결정", "비농업고용", "소비자물가")):
+            return True
+        if c == "JP" and "기준금리 결정" in nm:
+            return True
+    return False
+
 # ── 이벤트명 → (한글표기, 태그). 위에서부터 첫 매치를 쓴다.
 #    태그가 링크의 유일한 기준이다. 새 지표가 나와도 태그만 맞으면 자동 연결된다.
 NAME_MAP: list[tuple[str, str, tuple]] = [
@@ -777,7 +804,9 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
 
     done = []
     for e in sorted(done_raw, key=lambda x: x["when"], reverse=True):
-        if only_high and e.get("vol") != "HIGH":
+        # 09-30 사용자: 대시보드 SSS 와 링크 — 브리핑도 SSS 만. 신규상장은 국내
+        # 직접 이벤트라 예외 유지(09-28 누락 지적 이력).
+        if not (is_sss(e) or e.get("src") == "kr_ipo"):
             continue
         if e.get("src") == "us_earnings" and e.get("sym"):
             _enrich_earnings(e, now)      # 발표 후 실제 EPS → 상회/부합/하회
@@ -811,9 +840,7 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
     # 시간순 순회 — 캡(n_earn)이 수집 순서가 아니라 임박한 일정부터 채워지게 (09-28)
     for e in sorted(ahead_raw, key=lambda x: x["when"]):
         high = e.get("vol") == "HIGH"
-        if only_high and not high:
-            continue
-        if e.get("country") not in ("US", "KR", "CN"):   # 코스피에 직접 닿는 곳만
+        if not (is_sss(e) or e.get("src") == "kr_ipo"):   # SSS 링크 (09-30 사용자)
             continue
         if e.get("src") in ("us_earnings", "kr_ipo", "holidays"):
             if e["when"] > earn_end or n_earn >= 6:

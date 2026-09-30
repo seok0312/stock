@@ -22,30 +22,7 @@ WEB_DIR = "/var/www/html"
 
 TYPE = {"fxstreet": "지표", "us_earnings": "실적", "kr_ipo": "IPO",
         "holidays": "휴장", "kr_expiry": "만기", "btc": "코인", "custom": "기타"}
-SSS_EARN = {"AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "AMZN", "META", "TSLA",
-            "AVGO", "MU", "TSM", "AMD", "COIN", "MSTR"}   # COIN·MSTR = 크립토 심리 대리
 _MOMYOY = re.compile(r"\((MOM|YOY|QOQ)\)")
-
-
-def is_sss(e) -> bool:
-    src = e.get("src")
-    nm = e.get("name_kr") or e.get("name") or ""
-    raw = e.get("name") or ""
-    c = e.get("country")
-    if src in ("holidays", "kr_expiry"):
-        return True
-    if src == "btc":
-        return e.get("vol") == "HIGH"          # 반감기만 SSS, CME 만기는 일반
-    if src == "us_earnings":
-        return (raw.split() or [""])[0] in SSS_EARN
-    if src == "custom":
-        return e.get("vol") == "HIGH"
-    if src == "fxstreet":
-        if c == "US" and any(k in nm for k in ("기준금리 결정", "비농업고용", "소비자물가")):
-            return True
-        if c == "JP" and "기준금리 결정" in nm:
-            return True
-    return False
 
 
 def build(now=None) -> str:
@@ -54,6 +31,7 @@ def build(now=None) -> str:
     near_end = start + timedelta(days=14)
     far_end = start + timedelta(days=92)
     import events
+    from events import is_sss          # 브리핑과 단일 원천 (09-30)
     evs = events.collect(start, far_end)
     # us_earnings 프로바이더는 브리핑 비용 제한으로 9일 캡 — 캘린더는 9일씩 이어붙임
     fe = events.PROVIDERS.get("us_earnings")
