@@ -52,6 +52,15 @@ def record(now=None, force=False) -> int:
     code_col = next(c for c in ("종목코드", "index") if c in df.columns)
     hot = df[(df["등락률"] >= 5) & (df["거래대금"] >= 50e8) & df["종목명"].notna()]
     hot = hot.sort_values("거래대금", ascending=False).head(60)
+    # 주도주 플래그(09-30 사용자 '주도주 한정' 정책) — A안 문턱: 시총구간 배율
+    # (10조↑ ×0.6 / 1~10조 ×1.0 / 1조↓ ×1.4, 기준 2%) & 거래대금 상위 20위 이내.
+    # 몇 주 뒤 '주도주 한정 vs 전체 과열'을 실측 비교하는 근거가 된다.
+    import pandas as _pd
+    _mc = _pd.to_numeric(df["시가총액"], errors="coerce").fillna(0)
+    _mult = _pd.Series(1.0, index=df.index).where(_mc < 10e12, 0.6).where(_mc >= 1e12, 1.4)
+    _lead = df[df["등락률"] >= 2.0 * _mult].sort_values("거래대금", ascending=False)
+    lead_codes = {str(df.loc[i][code_col]).zfill(6) if code_col in df.columns else str(i)
+                  for i in _lead.index[:20]}
     kc = KiwoomClient()
     n = 0
     with open(PATH, "a", encoding="utf-8") as f:
@@ -68,7 +77,8 @@ def record(now=None, force=False) -> int:
             except Exception:
                 tag = None
             f.write(json.dumps({
-                "date": today, "code": code, "name": str(x["종목명"]),
+                "date": today, "code": code, "leader": code in lead_codes,
+                "name": str(x["종목명"]),
                 "chg": round(float(x["등락률"]), 2),
                 "close": float(x["종가"]) if x.get("종가") == x.get("종가") else None,
                 "amt_eok": round(float(x["거래대금"]) / 1e8),
