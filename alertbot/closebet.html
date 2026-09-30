@@ -95,6 +95,14 @@ td.pos{color:var(--pos)} td.neg{color:var(--neg)}
     </div>
   </div>
 
+  <div id="pulsewrap" style="display:none">
+    <h2>🏭 주도 섹터 · 테마 <span class="qual" id="pulse-gen"></span></h2>
+    <div class="grid2">
+      <div class="panel" id="pulse-sec"></div>
+      <div class="panel" id="pulse-th"></div>
+    </div>
+  </div>
+
   <div id="calwrap" style="display:none">
     <h2>📅 향후 일정 <button id="cal-mode" style="border:1px solid var(--border);
       background:var(--panel);color:var(--text-1);border-radius:8px;padding:3px 10px;
@@ -199,8 +207,31 @@ async function calendar(){
   }catch(e){ /* calendar.json 없으면 숨김 */ }
 }
 
+async function pulse(){
+  try{
+    const p = await (await fetch("sector_pulse.json?v="+Date.now())).json();
+    if(!p.sectors) return;
+    document.getElementById("pulse-gen").textContent =
+      `top200 거래대금 집계 · 축적 ${p.days}일 · ${p.date.slice(4,6)}/${p.date.slice(6,8)} 기준`;
+    const block = (d, title)=>{
+      const main = d.main.map(x=>
+        `<div style="padding:2px 0">· <b>${x.name}</b> <span class="qual">연속 ${x.n_top}/${x.win}일</span>`+
+        ` 점유 ${x.share}% <span class="${x.chg>0?"pos":"neg"}">${x.chg>0?"+":""}${x.chg}%</span>`+
+        `${x.tops&&x.tops.length?` <span class="qual">${x.tops.join("·")}</span>`:""}</div>`).join("");
+      const rise = d.rising.length ?
+        `<div style="margin-top:8px"><b style="font-size:12px">🚀 부상</b> `+
+        d.rising.map(x=>`${x.name}(${x.ratio?("×"+x.ratio):"NEW"})`).join(" · ")+`</div>` : "";
+      return `<b style="font-size:13px">${title}</b>
+        <div class="qual" style="margin:4px 0 2px">메인 (연속성 순 — 반짝과 구분)</div>${main}${rise}`;
+    };
+    document.getElementById("pulse-sec").innerHTML = block(p.sectors, "주도 섹터");
+    document.getElementById("pulse-th").innerHTML = block(p.themes, "주도 테마");
+    document.getElementById("pulsewrap").style.display="";
+  }catch(e){ /* 없으면 숨김 */ }
+}
+
 async function boot(){
-  decision(); calendar();
+  decision(); calendar(); pulse();
   DATA = await (await fetch("closebet_data.json?v="+Date.now())).json();
   document.getElementById("gen").textContent =
     "생성 " + DATA.generated.replace("T"," ").slice(0,16) + " · 텔레그램 브리핑의 상세 화면";
