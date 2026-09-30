@@ -53,9 +53,16 @@ tag_track 전방검증(4출구 채점)으로 축적 중 — 한 달 뒤 갭 단�
 
 - **브리핑↔SSS 링크(09-30)**: 발표 예정/완료가 대시보드와 같은 events.is_sss
   (단일 원천, calendar_dash 는 import)로 필터 — 중국·유럽 지표, 중간급 미국 지표
-  (ADP·PCE 등) 브리핑에서 제거. **신규상장은 SSS 아니지만 예외 유지**(사용자 중시).
-  월간 옵션만기(MEDIUM)도 SSS 라 이제 브리핑에 노출. 역할 분담: 브리핑=임박
-  (지표 48h·실적 7일), 캘린더=3개월.
+  (ADP·PCE 등) 브리핑에서 제거. **IPO 는 국내외 모두 SSS 승격**(09-30 사용자
+  "Anthropic·OpenAI 급 놓치지 말 것"). 월간 옵션만기(MEDIUM)도 SSS 라 브리핑 노출.
+  역할 분담: 브리핑=임박(지표·실적 모두 7일 — 48h 는 다음 주 고용·CPI 가 안 보여
+  09-30 확장, cli 수집 지평 now+8일이 커버), 캘린더=3개월.
+- **미국 대형 IPO(09-30 신설, @provider("us_ipo"))**: 나스닥 IPO 캘린더 API
+  (api.nasdaq.com/api/ipo/calendar?date=YYYY-MM, Origin/Referer 헤더 필수, 월별
+  순회 ≤5개월) upcoming 테이블 → **공모 규모 ≥$1B 만**(스팩·소형 바이오 도배 방지;
+  dollarValueOfSharesOffered 우선, 빈 값이면 가격하단×주식수 — 수치는 "$2,530,000,000"
+  콤마 형식이라 _num 전에 $·콤마 제거 필수). when=상장예정일 KST 22:30, SSS.
+  첫 포착: Oura $2.5B(09-30). Anthropic·OpenAI 는 실제 신고 시 자동 포착됨.
 - **섹터 펄스(09-30 신설, sector_pulse.py)**: 매일 15:50 거래대금 top200 →
   섹터(sector_map)·테마(theme_map, ka90001/2 주간 캐시·현재 100테마 501종목)별
   점유율·에너지 집계 → sector_pulse.jsonl 축적 + 대시보드 카드. **메인 = 20일 중

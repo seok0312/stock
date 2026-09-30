@@ -55,8 +55,8 @@ def is_sss(e) -> bool:
     nm = e.get("name_kr") or e.get("name") or ""
     raw = e.get("name") or ""
     c = e.get("country")
-    if src_ in ("holidays", "kr_expiry"):
-        return True
+    if src_ in ("holidays", "kr_expiry", "kr_ipo", "us_ipo"):
+        return True          # IPO 는 국내외 모두 SSS (09-30 사용자, 해외는 $1B+ 만 수집)
     if src_ == "us_earnings":
         return (raw.split() or [""])[0] in SSS_EARN
     if src_ == "custom":
@@ -471,6 +471,62 @@ def _kr_expiry(start: datetime, end: datetime) -> list:
     return out
 
 
+@provider("us_ipo")
+def _us_ipo(start: datetime, end: datetime) -> list:
+    """미국 대형 IPO — 나스닥 IPO 캘린더(월 단위 API), 공모 규모 $1B 이상만.
+
+    Anthropic·OpenAI 급 상장을 놓치지 않기 위한 것(09-30 사용자). 스팩·소형
+    바이오 도배를 막으려고 규모 필터를 세게 건다. when = 상장 예정일 미국 개장
+    (KST 22:30 근사)."""
+    out, seen = [], set()
+    hdr = {"User-Agent": UA["User-Agent"], "Accept": "application/json, text/plain, */*",
+           "Origin": "https://www.nasdaq.com", "Referer": "https://www.nasdaq.com/"}
+    y, m = start.year, start.month
+    months = 0
+    while (y, m) <= (end.year, end.month) and months < 5:
+        months += 1
+        try:
+            r = requests.get("https://api.nasdaq.com/api/ipo/calendar",
+                             params={"date": f"{y}-{m:02d}"}, headers=hdr, timeout=20)
+            d = (r.json().get("data") or {}) if r.status_code == 200 else {}
+        except Exception:
+            d = {}
+        rows = ((d.get("upcoming") or {}).get("upcomingTable") or {}).get("rows") or []
+        for x in rows:
+            nm = (x.get("companyName") or "").strip()
+            if not nm or x.get("dealID") in seen:
+                continue
+            seen.add(x.get("dealID"))
+            # 나스닥 수치는 "$2,530,000,000" 콤마 형식 — _num(float) 전에 벗겨야 한다
+            clean = lambda s: str(s or "").replace("$", "").replace(",", "").strip()
+            size = _num(clean(x.get("dollarValueOfSharesOffered")))
+            if not size:      # 규모 필드가 비면 가격하단×주식수로 추정
+                px = _num(clean(str(x.get("proposedSharePrice") or "").split("-")[0]))
+                sh = _num(clean(x.get("sharesOffered")))
+                size = (px or 0) * (sh or 0)
+            if not size or size < 1e9:
+                continue
+            try:
+                mm, dd, yy = (x.get("expectedPriceDate") or "").split("/")
+                when = datetime(int(yy), int(mm), int(dd), 22, 30, tzinfo=KST)
+            except (ValueError, AttributeError):
+                continue
+            if not (start <= when <= end):
+                continue
+            tk = (x.get("proposedTickerSymbol") or "").strip()
+            out.append({"when": when, "country": "US",
+                        "name": f"{nm} 미국 IPO" + (f" ({tk})" if tk else ""),
+                        "name_kr": f"{nm} 미국 IPO" + (f" ({tk})" if tk else ""),
+                        "actual": None, "consensus": None, "previous": None,
+                        "unit": None, "vol": "HIGH", "dev": None, "better": None,
+                        "speech": False, "tags": set(), "src": "us_ipo",
+                        "note": f"공모 규모 ~${size/1e9:.1f}B"})
+        m += 1
+        if m == 13:
+            y, m = y + 1, 1
+    return out
+
+
 @provider("btc")
 def _btc(start: datetime, end: datetime) -> list:
     """비트코인 정기 일정 — 전부 규칙 기반 (09-30 사용자).
@@ -806,7 +862,7 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
     for e in sorted(done_raw, key=lambda x: x["when"], reverse=True):
         # 09-30 사용자: 대시보드 SSS 와 링크 — 브리핑도 SSS 만. 신규상장은 국내
         # 직접 이벤트라 예외 유지(09-28 누락 지적 이력).
-        if not (is_sss(e) or e.get("src") == "kr_ipo"):
+        if not is_sss(e):        # IPO 는 is_sss 가 직접 True (09-30)
             continue
         if e.get("src") == "us_earnings" and e.get("sym"):
             _enrich_earnings(e, now)      # 발표 후 실제 EPS → 상회/부합/하회
@@ -834,15 +890,16 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
     # 다 차지하고 정작 미국 고용지표가 밀린다. 중요도로 먼저 거른 뒤 시간순 정렬.
     # 지표는 48시간, 실적은 7일까지 본다. 실적 날짜는 훨씬 전부터 확정돼 있고
     # '이번 주에 엔비디아가 있다'는 정보 자체가 포지션 크기를 바꾸기 때문이다.
-    ind_end = now + timedelta(hours=48)
+    # 지표도 7일 — 48h 면 다음 주 고용·CPI·FOMC 가 안 보인다 (09-30 사용자)
+    ind_end = now + timedelta(days=7)
     earn_end = now + timedelta(days=7)
     cand, n_earn = [], 0
     # 시간순 순회 — 캡(n_earn)이 수집 순서가 아니라 임박한 일정부터 채워지게 (09-28)
     for e in sorted(ahead_raw, key=lambda x: x["when"]):
         high = e.get("vol") == "HIGH"
-        if not (is_sss(e) or e.get("src") == "kr_ipo"):   # SSS 링크 (09-30 사용자)
+        if not is_sss(e):        # SSS 링크 — IPO 포함 is_sss 단일 원천 (09-30 사용자)
             continue
-        if e.get("src") in ("us_earnings", "kr_ipo", "holidays"):
+        if e.get("src") in ("us_earnings", "kr_ipo", "us_ipo", "holidays"):
             if e["when"] > earn_end or n_earn >= 6:
                 continue
             n_earn += 1
