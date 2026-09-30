@@ -217,6 +217,7 @@ async function pulse(){
       const main = d.main.map(x=>
         `<div style="padding:2px 0">· <b>${x.name}</b> <span class="qual">연속 ${x.n_top}/${x.win}일</span>`+
         ` 점유 ${x.share}% <span class="${x.chg>0?"pos":"neg"}">${x.chg>0?"+":""}${x.chg}%</span>`+
+        `${x.attn?` <span class="qual">🔍${x.attn}</span>`:""}`+
         `${x.tops&&x.tops.length?` <span class="qual">${x.tops.join("·")}</span>`:""}</div>`).join("");
       const rise = d.rising.length ?
         `<div style="margin-top:8px"><b style="font-size:12px">🚀 부상</b> `+
@@ -225,7 +226,12 @@ async function pulse(){
         <div class="qual" style="margin:4px 0 2px">메인 (연속성 순 — 반짝과 구분)</div>${main}${rise}`;
     };
     document.getElementById("pulse-sec").innerHTML = block(p.sectors, "주도 섹터");
-    document.getElementById("pulse-th").innerHTML = block(p.themes, "주도 테마");
+    let th = block(p.themes, "주도 테마 (키움 분류)");
+    if(p.news_themes && p.news_themes.length){
+      th += `<div style="margin-top:10px"><b style="font-size:12px">📰 뉴스 유동 테마</b> <span class="qual">(급등주×뉴스 클러스터 — 키움 분류 밖 신생 감지)</span>`+
+        p.news_themes.map(t=>`<div style="padding:2px 0">· <b>${(t.kw||[]).join("/")||"?"}</b> <span class="qual">${(t.stocks||[]).join("·")}${t.known&&t.known.length?" ≈"+t.known[0]:" (신생)"}</span></div>`).join("")+`</div>`;
+    }
+    document.getElementById("pulse-th").innerHTML = th;
     document.getElementById("pulsewrap").style.display="";
   }catch(e){ /* 없으면 숨김 */ }
 }

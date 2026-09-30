@@ -74,6 +74,20 @@ def build_theme_map(verbose: bool = True) -> dict:
     return out
 
 
+def _attention_ranks(now=None) -> dict:
+    """오늘 인기검색 최신 스냅샷 {code: rank}. 없으면 {} (attention 은 장중만 수집)."""
+    now = now or datetime.now(KST)
+    path = os.path.join(DATA, "attention", now.strftime("%Y%m%d") + ".jsonl")
+    try:
+        last = None
+        for line in open(path, encoding="utf-8"):
+            last = line
+        top = json.loads(last).get("top") or []
+        return {r[1]: r[0] for r in top}
+    except Exception:
+        return {}
+
+
 def _load_theme_map() -> dict:
     try:
         return json.load(open(THEME_MAP, encoding="utf-8"))["map"]
@@ -125,8 +139,32 @@ def record(now=None):
                      "sec": smap.get(code), "th": tmap.get(code) or []})
     sectors = _agg(rows, lambda r: [r["sec"]] if r["sec"] else [])
     themes = _agg(rows, lambda r: r["th"])
+    # 관심점수(09-30 사용자 가설: 주도 테마 = 검색 관심 동반, 첫날 상관 +0.45):
+    # 그룹 전체 구성종목 중 인기검색 top100 에 든 종목의 Σ(101-순위)
+    ranks = _attention_ranks(now)
+    if ranks:
+        sec_members, th_members = {}, {}
+        for code, sname in smap.items():
+            sec_members.setdefault(sname, []).append(code)
+        for code, ths in tmap.items():
+            for t in ths:
+                th_members.setdefault(t, []).append(code)
+        for g in sectors:
+            g["attn"] = sum(max(0, 101 - ranks[c]) for c in sec_members.get(g["name"], []) if c in ranks)
+        for g in themes:
+            g["attn"] = sum(max(0, 101 - ranks[c]) for c in th_members.get(g["name"], []) if c in ranks)
+    # 뉴스 기반 유동 테마(theme_scout) — 키움 정적 분류의 사각 보완 (09-30 사용자)
+    news_themes = []
+    try:
+        import theme_scout
+        for cl in (theme_scout.scan(now) or [])[:4]:
+            news_themes.append({"kw": cl.get("keywords") or [],
+                                "stocks": [s[0] for s in (cl.get("stocks") or [])[:4]],
+                                "known": cl.get("known_theme") or []})
+    except Exception as e:
+        print(f"  뉴스 테마 스캔 실패(계속): {type(e).__name__}: {str(e)[:60]}")
     rec = {"date": today, "total_eok": round(sum(r["amt"] for r in rows)),
-           "sectors": sectors[:15], "themes": themes[:25]}
+           "sectors": sectors[:15], "themes": themes[:25], "news_themes": news_themes}
     # 같은 날 재실행 = 교체 (멱등)
     hist = load_history()
     hist = [h for h in hist if h["date"] != today] + [rec]
@@ -204,6 +242,7 @@ def dash(hist=None):
                              "recent3": round(c["recent3"], 2)})
         rise.sort(key=lambda x: x["ratio"] or 99, reverse=True)
         doc[kind] = {"today": cur, "main": main[:5], "rising": rise[:5]}
+    doc["news_themes"] = hist[-1].get("news_themes") or []
     out_dir = WEB_DIR if os.path.isdir(WEB_DIR) else os.path.join(HERE, "out")
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "sector_pulse.json"), "w", encoding="utf-8") as f:
