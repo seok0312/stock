@@ -35,6 +35,31 @@ UA = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
 COST = 0.20          # 왕복 비용(수수료+거래세+슬리피지) — report 에서 차감 표기
 
 
+def _kospi_above60():
+    """코스피 종가 vs 60일 이평 국면 — 10-02 검증: 갭 태그는 60일선 아래에서
+    엣지 소멸(위 +1.04%/56% vs 아래 +0.31%/46%, welch t=+2.0), 손바뀜은 비유의.
+    기록만 쌓고 룰 확정은 전방검증 판독에서. 실패 시 None(기록은 계속)."""
+    closes = []
+    try:
+        for p in range(1, 5):
+            r = requests.get("https://m.stock.naver.com/api/index/KOSPI/price",
+                             params={"pageSize": 20, "page": p}, headers=UA,
+                             timeout=12).json()
+            if not isinstance(r, list) or not r:
+                break
+            for x in r:
+                try:
+                    closes.append(float(str(x["closePrice"]).replace(",", "")))
+                except (KeyError, ValueError):
+                    continue
+        if len(closes) < 60:
+            return None
+        cur, ma60 = closes[0], sum(closes[:60]) / 60
+        return {"kospi": cur, "ma60": round(ma60, 2), "above60": cur > ma60}
+    except Exception:
+        return None
+
+
 def record(now=None, force=False) -> int:
     now = now or datetime.now(KST)
     today = now.strftime("%Y%m%d")
@@ -61,6 +86,7 @@ def record(now=None, force=False) -> int:
     _lead = df[df["등락률"] >= 2.0 * _mult].sort_values("거래대금", ascending=False)
     lead_codes = {str(df.loc[i][code_col]).zfill(6) if code_col in df.columns else str(i)
                   for i in _lead.index[:20]}
+    reg = _kospi_above60()            # 하루 한 번 — 전 행 공통 국면 플래그
     kc = KiwoomClient()
     n = 0
     with open(PATH, "a", encoding="utf-8") as f:
@@ -82,6 +108,7 @@ def record(now=None, force=False) -> int:
                 "chg": round(float(x["등락률"]), 2),
                 "close": float(x["종가"]) if x.get("종가") == x.get("종가") else None,
                 "amt_eok": round(float(x["거래대금"]) / 1e8),
+                "above60": reg["above60"] if reg else None,
                 "tag": tag}, ensure_ascii=False) + "\n")
             n += 1
             time.sleep(0.25)
