@@ -116,6 +116,53 @@ def record(now=None, force=False) -> int:
     return n
 
 
+def nxt_log(now=None, write=True) -> int:
+    """08:52 크론: 전 거래일 갭(태그1) 기록 종목의 NXT 프리마켓 가격 스냅샷.
+
+    ka10080 분봉에 프리마켓(08:00~08:50) 봉이 없어 과거 소급 검증이 불가(10-02
+    확인) — 전방 수집으로 'NXT 막판가에 매도 vs 09시 동시호가 매도'를 판독할
+    근거를 쌓는다. NXT 거래대금 상위(ka10032)에 없으면 그 자체가 유동성 없음
+    신호라 in_nxt_top=False 로 남긴다. → data/nxt_prelog.jsonl"""
+    now = now or datetime.now(KST)
+    today = now.strftime("%Y%m%d")
+    recs = []
+    try:
+        recs = [json.loads(l) for l in open(PATH, encoding="utf-8")]
+    except FileNotFoundError:
+        pass
+    prev = sorted({r["date"] for r in recs if r["date"] < today})
+    if not prev:
+        print("[nxt_log] 이전 기록 없음")
+        return 0
+    last = prev[-1]
+    targets = {r["code"]: r["name"] for r in recs
+               if r["date"] == last and r.get("tag") == "갭"}
+    if not targets:
+        print(f"[nxt_log] {last} 갭 태그 없음 — 생략")
+        return 0
+    import nxt
+    rows = {r["code"]: r for r in nxt.fetch_quant()}
+    out_path = os.path.join(HERE, "data", "nxt_prelog.jsonl")
+    n = 0
+    lines = []
+    for code, name in targets.items():
+        r = rows.get(code)
+        lines.append({"date": today, "sig_date": last, "code": code, "name": name,
+                      "nxt_price": (r or {}).get("price"),
+                      "nxt_chg": (r or {}).get("chg_pct"),
+                      "nxt_amt_eok": (r or {}).get("amt_eok"),
+                      "in_nxt_top": bool(r)})
+        n += 1
+    if write:
+        with open(out_path, "a", encoding="utf-8") as f:
+            for x in lines:
+                f.write(json.dumps(x, ensure_ascii=False) + "\n")
+    hit = sum(1 for x in lines if x["in_nxt_top"])
+    print(f"[nxt_log] {today} 전일({last}) 갭 {n}종목 · NXT 상위 포착 {hit}"
+          + ("" if write else " (dry)"))
+    return n
+
+
 def _daily_px(code: str, pages: int = 1) -> list:
     """[(YYYYMMDD, open, close)] 최신순."""
     out = []
@@ -302,6 +349,7 @@ if __name__ == "__main__":
     ap.add_argument("--record", action="store_true")
     ap.add_argument("--evaluate", action="store_true")
     ap.add_argument("--report", action="store_true")
+    ap.add_argument("--nxt-log", action="store_true")
     a = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
     import notify
@@ -315,3 +363,5 @@ if __name__ == "__main__":
         evaluate_decisions()
     if a.report:
         report()
+    if a.nxt_log:
+        nxt_log()
