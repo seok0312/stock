@@ -86,12 +86,22 @@ def record(now=None, force=False) -> int:
     _lead = df[df["등락률"] >= 2.0 * _mult].sort_values("거래대금", ascending=False)
     lead_codes = {str(df.loc[i][code_col]).zfill(6) if code_col in df.columns else str(i)
                   for i in _lead.index[:20]}
+    # 2군 밴드(10-02 사용자 '대형주는 2~3%도 주도주'): 티어문턱(2%×배율)~5% 미만
+    # · 대금 50억↑ 상위 20. 백테스트상 엣지는 과열의 1/3(태그1 +0.27%, 2024 음수)
+    # 이라 베팅 트리거 아님 — band="tier" 로 기록만 쌓아 전방 판독.
+    tier = df[(df["등락률"] >= 2.0 * _mult) & (df["등락률"] < 5)
+              & (df["거래대금"] >= 50e8) & df["종목명"].notna()]
+    tier = tier.sort_values("거래대금", ascending=False).head(20)
     reg = _kospi_above60()            # 하루 한 번 — 전 행 공통 국면 플래그
     kc = KiwoomClient()
-    n = 0
+    n, written = 0, set()
     with open(PATH, "a", encoding="utf-8") as f:
-        for _, x in hot.iterrows():
+      for band, part in (("hot5", hot), ("tier", tier)):
+        for _, x in part.iterrows():
             code = str(x[code_col]).zfill(6)
+            if code in written:
+                continue
+            written.add(code)
             try:
                 d, _ = kc.request("ka10059",
                                   {"dt": today, "stk_cd": code, "amt_qty_tp": "1",
@@ -109,10 +119,13 @@ def record(now=None, force=False) -> int:
                 "close": float(x["종가"]) if x.get("종가") == x.get("종가") else None,
                 "amt_eok": round(float(x["거래대금"]) / 1e8),
                 "above60": reg["above60"] if reg else None,
+                "band": band,
                 "tag": tag}, ensure_ascii=False) + "\n")
             n += 1
             time.sleep(0.25)
-    print(f"[record] {today} 과열 {n}종목 기록 (태그 판정: 당일 잠정치)")
+    n_tier = sum(1 for c in written if c not in
+                 {str(x[code_col]).zfill(6) for _, x in hot.iterrows()})
+    print(f"[record] {today} 과열 {n - n_tier} + 2군(티어~5%) {n_tier} 기록 (당일 잠정치)")
     return n
 
 
@@ -323,6 +336,9 @@ def report():
           " 갭 +0.83%/53% · 손바뀜 +1.71%/53% · 무차별 +0.16%/46%)")
     groups = {"갭": [], "손바뀜": [], "회피": [], None: []}
     for r in recs:
+        if r.get("band") == "tier":        # 2군(티어~5%)은 본 집계에서 분리
+            groups.setdefault("2군:" + (r.get("tag") or "무태그"), []).append(r)
+            continue
         groups.setdefault(r.get("tag"), []).append(r)
     for tag, rs in groups.items():
         label = tag or "무태그(대조군)"
