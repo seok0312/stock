@@ -1,0 +1,96 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>주요종목 무버</title><style>
+:root{--bg:#0f1115;--card:#171a21;--tx:#d7dce3;--sub:#8b93a1;--acc:#4da3ff;--line:#262b35;
+      --up:#ff6b6b;--chip:#1d2c42}
+body{background:var(--bg);color:var(--tx);font-family:'Malgun Gothic',sans-serif;margin:0;
+     padding:16px;font-size:14px}
+.wrap{max-width:860px;margin:0 auto}
+h1{font-size:19px;margin:0 0 2px} h2{font-size:15px;color:var(--acc);margin:0 0 8px}
+.sub{color:var(--sub);font-size:12px;margin-bottom:12px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 14px}
+.tab{background:var(--card);border:1px solid var(--line);color:var(--sub);border-radius:16px;
+     padding:5px 13px;cursor:pointer;font-size:13px}
+.tab.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+      padding:14px 16px;margin:12px 0}
+table{border-collapse:collapse;width:100%;margin-top:6px}
+td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+th{color:var(--sub);font-weight:normal;font-size:12px}
+.pct{color:var(--up);font-weight:bold;white-space:nowrap}
+.n{color:var(--sub);font-size:12px} a{color:var(--acc);text-decoration:none}
+.chip{display:inline-block;background:var(--chip);color:#7db3ff;border-radius:9px;
+      padding:1px 9px;font-size:11px;margin:0 4px 4px 0}
+.cat{margin:4px 0 8px}
+.lim{color:#ffb454;font-size:11px;border:1px solid #ffb454;border-radius:6px;padding:0 5px;margin-left:5px}
+.news{font-size:12px;line-height:1.5}
+.src{color:var(--sub);font-size:11px}
+@media (prefers-color-scheme: light){:root{--bg:#f5f6f8;--card:#fff;--tx:#222;--sub:#667;
+  --line:#e2e5ea;--chip:#dfeaff;--up:#d32f2f}}
+@media (max-width:600px){td:nth-child(3),th:nth-child(3){display:none}}
+</style></head><body><div class="wrap">
+<h1>📈 주요종목 무버</h1>
+<div class="sub" id="gen">불러오는 중… · 뉴스가 가격에 어떻게 반영됐는지 복기하는 일별 아카이브
+ · <a href="closebet.html">종가베팅</a> · <a href="verify.html">검증 현황판</a></div>
+<div class="tabs" id="tabs"></div>
+<div id="body"></div>
+<script>
+const esc = s => (s||"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fdate = d => d.slice(4,6)+"/"+d.slice(6,8);
+let DOC = null;
+
+function newsCell(ns){
+  if(!ns || !ns.length) return '<span class="n">—</span>';
+  return ns.map(x => x.u
+    ? `<div class="news">· <a href="${esc(x.u)}" target="_blank">${esc(x.t)}</a> <span class="src">${esc(x.s)}</span></div>`
+    : `<div class="news">· ${esc(x.t)}</div>`).join("");
+}
+function catLine(cats){
+  if(!cats || !cats.length) return '<div class="cat n">뚜렷한 섹터 쏠림 없음</div>';
+  return '<div class="cat">' + cats.map(c =>
+    `<span class="chip">${esc(c.cat)} ×${c.n}</span><span class="n"> ${esc((c.names||[]).join(", "))}</span>`
+  ).join('<br>') + '</div>';
+}
+function usSec(u){
+  if(!u) return '<div class="card"><h2>🇺🇸 미국 (06시 기준)</h2><p class="n">기록 없음</p></div>';
+  let rows = (u.rows||[]).map(r =>
+    `<tr><td><b>${esc(r.name)}</b> <span class="n">${esc(r.sym)}</span></td>
+     <td class="pct">+${r.pct.toFixed(1)}%</td><td class="n">${esc(r.sector||"")}</td>
+     <td>${newsCell(r.news)}</td></tr>`).join("");
+  return `<div class="card"><h2>🇺🇸 미국 상승 상위 <span class="n">${esc(u.asof||"")}
+    · 상승 ${esc(u.breadth||"")}</span></h2>${catLine(u.cats)}
+    <table><tr><th>종목</th><th>등락</th><th>섹터</th><th>이유(뉴스)</th></tr>${rows}</table></div>`;
+}
+function krSec(k){
+  if(!k) return '<div class="card"><h2>🇰🇷 한국 (20시 기준)</h2><p class="n">기록 없음</p></div>';
+  let rows = (k.rows||[]).map(r =>
+    `<tr><td><b><a href="https://m.stock.naver.com/domestic/stock/${esc(r.code)}/news"
+       target="_blank">${esc(r.name)}</a></b>${r.limit_up?'<span class="lim">상한가</span>':''}<br>
+     <span class="n">${esc(r.sector||"")}${(r.themes&&r.themes.length)?" · "+esc(r.themes.join(", ")):""}</span></td>
+     <td class="pct">+${r.pct.toFixed(1)}%</td><td class="n">${(r.amt_eok||0).toLocaleString()}억</td>
+     <td>${newsCell(r.news)}</td></tr>`).join("");
+  return `<div class="card"><h2>🇰🇷 한국 상승 상위 <span class="n">${esc(k.asof||"")}</span></h2>
+    ${catLine(k.cats)}
+    <table><tr><th>종목 · 섹터/테마</th><th>등락</th><th>거래대금</th><th>이유(뉴스)</th></tr>${rows}</table></div>`;
+}
+function show(date){
+  const d = (DOC.days||[]).find(x => x.date === date);
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.d === date));
+  document.getElementById("body").innerHTML = d ? usSec(d.us)+krSec(d.kr) : "";
+}
+fetch("movers_data.json?t=" + Date.now()).then(r => r.json()).then(doc => {
+  DOC = doc;
+  document.getElementById("gen").innerHTML =
+    `갱신 ${esc(doc.generated)} · 🇺🇸 매일 06:10 · 🇰🇷 평일 20:00 · 날짜 탭으로 복기
+     · <a href="closebet.html">종가베팅</a> · <a href="verify.html">검증 현황판</a>`;
+  const tabs = document.getElementById("tabs");
+  (doc.days||[]).forEach((d,i) => {
+    const b = document.createElement("button");
+    b.className = "tab"; b.dataset.d = d.date; b.textContent = fdate(d.date);
+    b.onclick = () => show(d.date);
+    tabs.appendChild(b);
+  });
+  if(doc.days && doc.days.length) show(doc.days[0].date);
+  else document.getElementById("body").innerHTML = '<div class="card"><p class="n">아직 기록이 없습니다 — 다음 06:10/20:00 크론부터 쌓입니다.</p></div>';
+}).catch(e => document.getElementById("gen").textContent = "로드 실패: " + e);
+</script></div></body></html>
