@@ -73,10 +73,31 @@ function krSec(k){
     ${catLine(k.cats)}
     <table><tr><th>종목 · 섹터/테마</th><th>등락</th><th>거래대금</th><th>이유(뉴스)</th></tr>${rows}</table></div>`;
 }
+function olSec(o){
+  if(!o) return "";
+  const badge = (i) => !o.hit ? '<span class="chip">대기</span>'
+    : (o.hit[i] ? '<span class="chip" style="background:#173d2a;color:#5fd68a">적중</span>'
+                : '<span class="chip" style="background:#422020;color:#ff8a80">빗나감</span>');
+  let lines = "";
+  (o.spill||[]).forEach(s => {
+    const i = (o.pred||[]).indexOf(s.kr);
+    lines += `<div class="news">· <b>${esc(s.kr)}</b> ← ${esc(s.why)} ${i>=0?badge(i):""}<br>
+              <span class="n">&nbsp;&nbsp;${esc(s.names)}</span></div>`;
+  });
+  (o.cont||[]).forEach(s => {
+    const i = (o.pred||[]).indexOf(s.kr);
+    lines += `<div class="news">· <b>${esc(s.kr)}</b> — ${esc(s.why)} ${i>=0?badge(i):""}<br>
+              <span class="n">&nbsp;&nbsp;${esc(s.names)}</span></div>`;
+  });
+  const sc = o.score ? ` · 적중 <b>${esc(o.score)}</b>` : " · 저녁 20시 채점 대기";
+  return `<div class="card"><h2>🌅 아침 예상 <span class="n">${esc(o.asof||"")}${sc}</span></h2>
+    ${lines || '<p class="n">예상 없음</p>'}
+    ${(o.events&&o.events.length)?`<div class="n">일정: ${esc(o.events.join(" / "))}</div>`:""}</div>`;
+}
 function show(date){
   const d = (DOC.days||[]).find(x => x.date === date);
   document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.d === date));
-  document.getElementById("body").innerHTML = d ? usSec(d.us)+krSec(d.kr) : "";
+  document.getElementById("body").innerHTML = d ? olSec(d.outlook)+usSec(d.us)+krSec(d.kr) : "";
 }
 fetch("movers_data.json?t=" + Date.now()).then(r => r.json()).then(doc => {
   DOC = doc;

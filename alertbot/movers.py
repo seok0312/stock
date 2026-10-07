@@ -76,6 +76,29 @@ US_UNIV = [
     ("QBTS", "디웨이브", "양자"),
 ]
 
+# 미국 섹터 → 한국 파급 매핑 (아침 전망용 — 대표주는 표시용, 추천 아님)
+US2KR = {
+    "반도체": ("반도체", "삼성전자·SK하이닉스·한미반도체"),
+    "반도체장비": ("반도체", "삼성전자·SK하이닉스·한미반도체"),
+    "AI인프라": ("전력기기·AI인프라", "HD현대일렉트릭·효성중공업·LS일렉트릭"),
+    "전력": ("전력기기·AI인프라", "HD현대일렉트릭·효성중공업·LS일렉트릭"),
+    "원전": ("원전", "두산에너빌리티·한전기술·우리기술"),
+    "빅테크": ("인터넷·IT", "NAVER·카카오"),
+    "소프트웨어": ("인터넷·IT", "NAVER·카카오·더존비즈온"),
+    "보안": ("보안", "안랩·샌즈랩"),
+    "전기차": ("2차전지", "LG에너지솔루션·에코프로비엠·엘앤에프"),
+    "암호화폐": ("가상자산", "우리기술투자·갤럭시아머니트리·한화투자증권"),
+    "제약": ("제약바이오", "삼성바이오로직스·셀트리온·알테오젠"),
+    "바이오": ("제약바이오", "삼성바이오로직스·셀트리온·알테오젠"),
+    "헬스케어": ("제약바이오", "삼성바이오로직스·셀트리온"),
+    "의료기기": ("의료AI", "루닛·뷰노"),
+    "방산항공": ("방산", "한화에어로스페이스·현대로템·LIG넥스원"),
+    "우주": ("우주항공", "한화시스템·쎄트렉아이"),
+    "미디어": ("콘텐츠", "스튜디오드래곤·콘텐트리중앙"),
+    "에너지": ("정유", "S-Oil·GS"),
+    "금융": ("금융", "KB금융·신한지주"),
+}
+
 ETF_PAT = re.compile(r"KODEX|TIGER|ACE |PLUS |SOL |RISE |HANARO|KOSEF|KIWOOM |ARIRANG|1Q |스팩")
 
 
@@ -222,9 +245,149 @@ def record_kr(now=None, top=10) -> int:
         return 0
     doc = {"asof": now.strftime("%m/%d %H:%M"), "rows": rows, "cats": _cats(rows)}
     _merge_save(today, "kr", doc)
+    _score_outlook(today, doc)      # 아침 예상 채점 (적중 루프)
     dash()
     print(f"[kr] {today} 상승 상위 {len(rows)} 기록")
     return len(rows)
+
+
+def _load_day(date):
+    try:
+        return json.load(open(os.path.join(DATA, date + ".json"), encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _latest_with(part, before_or_eq):
+    """part('us'/'kr') 가 있는 가장 최근 날짜 파일 (date, doc) 또는 (None, None)."""
+    try:
+        files = sorted(os.listdir(DATA), reverse=True)
+    except FileNotFoundError:
+        return None, None
+    for fn in files:
+        d = fn[:8]
+        if d <= before_or_eq:
+            doc = _load_day(d)
+            if doc.get(part):
+                return d, doc[part]
+    return None, None
+
+
+def outlook(now=None, dry_run=False):
+    """아침 전망 (08:00 크론) — 간밤 미국 무버 + 어제 국장 흐름으로 오늘 국장
+    파급 후보를 합성해 텔레그램 발송 + 기록. 저녁 20시 record_kr 가 실제 주도
+    섹터와 대조해 적중을 채점한다 (10-08 사용자: 뉴스-가격 해석 훈련 루프)."""
+    now = now or datetime.now(KST)
+    today = now.strftime("%Y%m%d")
+    import notify
+    notify.load_env(os.path.join(HERE, ".env"),
+                    os.path.abspath(os.path.join(HERE, "..", ".env")))
+    esc = notify.esc
+    us_d, us = _latest_with("us", today)
+    y_d, ykr = _latest_with("kr", (now - timedelta(days=1)).strftime("%Y%m%d"))
+    pred, spill, seen = [], [], set()
+    if us:
+        srcs = [(c["cat"], "미 " + c["cat"] + " 쏠림 x" + str(c["n"]))
+                for c in us.get("cats") or []]
+        srcs += [(r["sector"], r["name"] + " " + format(r["pct"], "+.1f") + "%")
+                 for r in (us.get("rows") or [])[:5] if r["pct"] >= 3]
+        for sec, why in srcs:
+            m = US2KR.get(sec)
+            if not m or m[0] in seen:
+                continue
+            seen.add(m[0])
+            spill.append({"kr": m[0], "names": m[1], "why": why})
+            pred.append(m[0])
+            if len(spill) >= 4:
+                break
+    cont = []
+    if ykr:
+        for c in (ykr.get("cats") or [])[:2]:
+            cont.append({"kr": c["cat"], "names": "·".join(c["names"][:3]),
+                         "why": "어제 상위 쏠림 x" + str(c["n"])})
+            if c["cat"] not in seen:
+                pred.append(c["cat"])
+    try:
+        sp = json.load(open(os.path.join(WEB_DIR, "sector_pulse.json"), encoding="utf-8"))
+        m0 = (sp.get("sectors") or {}).get("main") or []
+        if m0:
+            g = m0[0]
+            cont.append({"kr": g["name"], "names": "·".join(g.get("tops") or []),
+                         "why": "펄스 메인 " + str(g.get("n_top", 0)) + "/" + str(g.get("win", 0)) + "일"})
+    except Exception:
+        pass
+    ev_lines = []
+    try:
+        import events as ev_mod
+        evs = ev_mod.collect(now - timedelta(hours=2), now + timedelta(hours=14))
+        for e in sorted(evs, key=lambda x: x["when"]):
+            if ev_mod.is_sss(e) and e["when"] >= now - timedelta(hours=2):
+                ev_lines.append(e["when"].strftime("%H:%M") + " " + (e.get("name_kr") or e["name"]))
+            if len(ev_lines) >= 4:
+                break
+    except Exception:
+        pass
+
+    L = ["<b>🌅 아침 전망</b> (" + now.strftime("%m/%d %a") + ")"]
+    if us:
+        head = "간밤 미국(" + us_d[4:6] + "/" + us_d[6:8] + "): 상승 " + esc(us.get("breadth") or "")
+        if us.get("cats"):
+            head += " — " + " · ".join(c["cat"] + "x" + str(c["n"]) for c in us["cats"][:3])
+        L.append(head)
+        for r in (us.get("rows") or [])[:3]:
+            ns = r.get("news") or []
+            tt = ns[0].get("t") if ns else ""
+            line = " · " + esc(r["name"]) + " " + format(r["pct"], "+.1f") + "%"
+            if tt:
+                line += " — " + esc(tt[:40])
+            L.append(line)
+    if spill:
+        L.append("")
+        L.append("<b>오늘 국장 파급 후보</b>")
+        for s in spill:
+            L.append(" · " + esc(s["kr"]) + " ← " + esc(s["why"]) + "\n   " + esc(s["names"]))
+    if cont:
+        L.append("")
+        L.append("<b>이어질 흐름(연속성)</b>")
+        for c in cont:
+            L.append(" · " + esc(c["kr"]) + " — " + esc(c["why"]) + "\n   " + esc(c["names"]))
+    if ev_lines:
+        L.append("")
+        L.append("<b>오늘 일정</b> " + " / ".join(esc(x) for x in ev_lines))
+    L.append("")
+    L.append("<i>예상은 20시에 실제 주도 섹터와 대조해 적중 기록 → movers.html</i>")
+    msg = "\n".join(L)
+    doc = {"asof": now.strftime("%m/%d %H:%M"), "us_date": us_d, "pred": pred[:5],
+           "spill": spill, "cont": cont, "events": ev_lines}
+    _merge_save(today, "outlook", doc)
+    dash()
+    ok = notify.send(msg, dry_run=dry_run)
+    print("[outlook] " + today + " 파급 " + str(len(spill)) + " · 연속 " + str(len(cont))
+          + " · 발송 " + str(ok))
+    return ok
+
+
+def _score_outlook(today, kr_doc):
+    """20시: 아침 예상(pred) vs 실제 상위 — 느슨 매칭(대표주/섹터/테마 텍스트 포함)."""
+    day = _load_day(today)
+    ol = day.get("outlook")
+    if not ol:
+        return
+    rows = kr_doc.get("rows") or []
+    actual_txt = " ".join(
+        [r["name"] for r in rows] + [(r.get("sector") or "") for r in rows]
+        + sum([r.get("themes") or [] for r in rows], [])
+        + [c["cat"] for c in kr_doc.get("cats") or []])
+    hits = []
+    for p in ol.get("pred") or []:
+        kws = [w for w in re.split(r"[·/]", p) if len(w) >= 2]
+        for s in (ol.get("spill") or []) + (ol.get("cont") or []):
+            if s["kr"] == p:
+                kws += [w for w in (s.get("names") or "").split("·") if len(w) >= 2]
+        hits.append(bool(any(k in actual_txt for k in kws)))
+    ol["hit"] = hits
+    ol["score"] = (str(sum(hits)) + "/" + str(len(hits))) if hits else None
+    _merge_save(today, "outlook", ol)
 
 
 def dash(days=30):
@@ -253,11 +416,15 @@ if __name__ == "__main__":
     ap.add_argument("--us", action="store_true")
     ap.add_argument("--kr", action="store_true")
     ap.add_argument("--dash", action="store_true")
+    ap.add_argument("--outlook", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     if a.us:
         record_us()
     if a.kr:
         record_kr()
+    if a.outlook:
+        outlook(dry_run=a.dry_run)
     if a.dash or not (a.us or a.kr):
         dash()
         print("dash 갱신")
