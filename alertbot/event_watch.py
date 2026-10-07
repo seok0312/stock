@@ -57,6 +57,72 @@ def _fx_actual(now, hhmm, core_name):
     return None, None, None
 
 
+KR_EARN_CODE = {"삼성전자": "005930", "SK하이닉스": "000660"}
+Q_MM = {"1Q": "03", "2Q": "06", "3Q": "09", "4Q": "12"}
+
+
+def _naver_cons(code: str, qkey: str):
+    """네이버 분기 재무의 컨센서스 (영업이익, 매출액) 조원 — 없으면 (None, None)."""
+    import requests
+    ua = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                        "AppleWebKit/605.1.15 Mobile/15E148",
+          "Referer": "https://m.stock.naver.com/"}
+    try:
+        j = requests.get(f"https://m.stock.naver.com/api/stock/{code}/finance/quarter",
+                         headers=ua, timeout=10).json()
+        rows = (j.get("financeInfo") or {}).get("rowList") or []
+        out = {}
+        for row in rows:
+            if row.get("title") in ("영업이익", "매출액"):
+                v = ((row.get("columns") or {}).get(qkey) or {}).get("value")
+                if v:
+                    out[row["title"]] = float(str(v).replace(",", "")) / 10000  # 억→조
+        return out.get("영업이익"), out.get("매출액")
+    except Exception:
+        return None, None
+
+
+def _kr_earn_actual(comp: str, event_name: str, now):
+    """실적 발표 수치 — 뉴스 풀 제목에서 영업익(조) 추출 + 분기 컨센 대비.
+
+    뉴스룸(news.samsung.com)은 서버·로컬 모두 타임아웃(봇 가드)이라 네이버 뉴스
+    풀이 소스 — 속보·공시 기사 제목에 수치가 먼저 뜬다(10-08 확인). 미발견 None."""
+    import news
+    hits = news._pool_match(keywords=(comp,), tickers=(KR_EARN_CODE.get(comp, ""),),
+                            limit=30, start=now - timedelta(minutes=90), end=now)
+    cands = []
+    for h in hits:
+        t = h["title"]
+        m = re.search(r"영업(?:이익|익)\s*([0-9]+(?:\.[0-9]+)?)\s*조"
+                      r"\s*(?:([0-9,]{1,6})\s*(천억|억))?", t)
+        if not m:
+            continue
+        sub = 0.0
+        if m.group(2):                   # '4천억'=0.4조, '4000억'=0.4조 둘 다 지원
+            n = float(m.group(2).replace(",", ""))
+            sub = (n * 1000 if m.group(3) == "천억" else n) / 10000
+        v = float(m.group(1)) + sub
+        my = re.search(r"전년\S{0,2}\s*\+?([0-9,.]+)\s*%", t)
+        cands.append({"op": v, "detail": bool(m.group(2) or "." in m.group(1)),
+                      "yoy": my.group(1) if my else None,
+                      "title": t, "url": h.get("url")})
+    if not cands:
+        return None
+    # 억 단위까지 적은 기사(107조4000억) 우선 — 라운드 제목(107조)보다 정확
+    best = next((c for c in cands if c["detail"]), cands[0])
+    op, yoy, title, url = best["op"], best["yoy"], best["title"], best["url"]
+    qm = re.search(r"([1-4]Q)", event_name)
+    cons = (None, None)
+    if qm:
+        cons = _naver_cons(KR_EARN_CODE.get(comp, ""), f"{now.year}{Q_MM[qm.group(1)]}")
+    body = [f"영업익 <b>{op:,.1f}조</b>" + (f" (전년比 +{yoy}%)" if yoy else "")]
+    if cons[0]:
+        d = (op / cons[0] - 1) * 100
+        body.append(f"컨센 {cons[0]:,.1f}조 — <b>{abs(d):.1f}% "
+                    + ("상회" if d >= 0 else "하회") + "</b>")
+    return {"line": " · ".join(body), "title": title, "url": url}
+
+
 def run(now=None, dry_run=False) -> int:
     now = now or datetime.now(KST)
     today = now.strftime("%Y%m%d")
@@ -110,6 +176,17 @@ def run(now=None, dry_run=False) -> int:
                 if it.get("val"):
                     body.append(esc(it["val"]))
             lines = " · ".join(body)
+        elif it.get("type") == "실적" and "🇰🇷" in it["name"]:
+            comp = next((c for c in KR_EARN_CODE if c in core), None)
+            got = _kr_earn_actual(comp, core, now) if comp else None
+            if got is None and comp and age_min < WAIT_ACTUAL_MIN:
+                continue                 # 수치 기사 대기 — 마킹 안 하고 다음 주기
+            if got:
+                lines = got["line"]
+                if got.get("title"):
+                    lines += f"\n<i>{esc(got['title'][:70])}</i>"
+            else:
+                lines = esc(it.get("val") or "") or None
         else:
             lines = esc(it.get("val") or "") or None
         msg = (f"📢 <b>발표완료</b> ({it['t']})\n{esc(it['name'])}"
