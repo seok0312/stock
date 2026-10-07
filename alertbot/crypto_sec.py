@@ -81,8 +81,8 @@ def fetch() -> dict:
         for x in d:  # UTC 자정 타임스탬프 → KST 날짜
             dt = datetime.fromtimestamp(int(x["timestamp"]), tz=KST).strftime("%Y%m%d")
             hist.setdefault(dt, {})["fng"] = int(x["value"])
-        out["fng"]["d5"] = _vs_avg(fng_v, hist, "fng", today, 5)
-        out["fng"]["d20"] = _vs_avg(fng_v, hist, "fng", today, 20)
+        pv = out["fng"].get("prev")
+        out["fng"]["chg"] = (fng_v / pv - 1) * 100 if pv else None
     except Exception:
         pass
     bn_spot = None
@@ -122,8 +122,9 @@ def fetch() -> dict:
         upvol = tot / 1e12
         out["upbit_vol_jo"] = upvol
         hist.setdefault(today, {})["upvol"] = upvol
-        out["upvol_d5"] = _vs_avg(upvol, hist, "upvol", today, 5)
-        out["upvol_d20"] = _vs_avg(upvol, hist, "upvol", today, 20)
+        prev = [v.get("upvol") for d, v in sorted(hist.items(), reverse=True)
+                if d < today and v.get("upvol")]
+        out["upvol_chg"] = (upvol / prev[0] - 1) * 100 if prev else None
     except Exception:
         pass
     for key, sym in (("btc", "BTCUSDT"), ("eth", "ETHUSDT")):
@@ -138,12 +139,34 @@ def fetch() -> dict:
         g = _get("https://api.coingecko.com/api/v3/global")["data"]
         pct = g["market_cap_percentage"]
         share = 100 - sum(pct.get(k, 0) for k in ("btc", "eth", "usdt", "usdc"))
-        t3 = g["total_market_cap"]["usd"] * share / 100 / 1e9      # B
+        total = g["total_market_cap"]["usd"]
+        t3 = total * share / 100 / 1e9      # B
+        # 24h 변동: 이력 없이도 되는 파생 계산 — 전체 시총 24h% 와 BTC·ETH 24h%
+        # (바이낸스 선물)로 어제 값을 역산, 스테이블 시총은 불변 가정.
+        chg = None
+        try:
+            tc = g.get("market_cap_change_percentage_24h_usd")
+            bc = (out.get("btc") or {}).get("chg")
+            ec = (out.get("eth") or {}).get("chg")
+            if None not in (tc, bc, ec):
+                btc_n = total * pct.get("btc", 0) / 100
+                eth_n = total * pct.get("eth", 0) / 100
+                st_n = total * (pct.get("usdt", 0) + pct.get("usdc", 0)) / 100
+                t3_y = (total / (1 + tc / 100) - btc_n / (1 + bc / 100)
+                        - eth_n / (1 + ec / 100) - st_n)
+                if t3_y > 0:
+                    chg = (total * share / 100 / t3_y - 1) * 100
+        except Exception:
+            pass
+        # 자체 이력(전일比)이 쌓이면 그걸 우선 — 파생 24h 는 코인게코 입력 품질에
+        # 민감해서 보조로만 (10-08 사용자 3차).
+        basis = "24h"
         prev = [v.get("t3es") for d, v in sorted(hist.items(), reverse=True)
                 if d < today and v.get("t3es")]
-        chg = (t3 / prev[0] - 1) * 100 if prev else None
+        if prev:
+            chg, basis = (t3 / prev[0] - 1) * 100, "hist"
         hist.setdefault(today, {})["t3es"] = t3
-        out["total3es"] = {"b": t3, "chg": chg}
+        out["total3es"] = {"b": t3, "chg": chg, "basis": basis}
     except Exception:
         pass
     _save_hist(hist)

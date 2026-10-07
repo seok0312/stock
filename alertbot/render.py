@@ -319,8 +319,8 @@ def section_key_stocks(win):
 
 
 def section_crypto(c):
-    """📊 크립토 — 전 항목 화살표, 공포탐욕·업비트대금은 5/20일 평균 대비,
-    TOTAL3ES 는 B 단위 + 전일比 (10-08 사용자 2차 개편). 실패분은 조용히 생략."""
+    """📊 크립토 — 전 항목 화살표 + 단일 변동률(전일/24h 기준), 10-08 사용자 3차.
+    실패분은 조용히 생략."""
     if not c:
         return ""
 
@@ -329,28 +329,19 @@ def section_crypto(c):
             return "▪️"
         return "🔺" if v > 0 else ("🔽" if v < 0 else "▪️")
 
-    def d520(a, b):
-        parts = []
-        if a is not None:
-            parts.append(f"5일 {a:+.0f}%")
-        if b is not None:
-            parts.append(f"20일 {b:+.0f}%")
-        return f" <i>({' / '.join(parts)})</i>" if parts else ""
-
     L = ["\n📊 <b>크립토</b>"]
     f = c.get("fng")
     if f:
-        diff = None if f.get("prev") is None else f["v"] - f["prev"]
-        L.append(f"  {ar(diff)} 공포탐욕 <b>{f['v']} ({esc(f['label'])})</b>"
-                 + d520(f.get("d5"), f.get("d20")))
+        chg = f" <b>{f['chg']:+.1f}%</b>" if f.get("chg") is not None else ""
+        L.append(f"  {ar(f.get('chg'))} 공포탐욕 <b>{f['v']} ({esc(f['label'])})</b>{chg}")
     if c.get("cb_prem") is not None:
         L.append(f"  {ar(c['cb_prem'])} 코베프리미엄 <b>{c['cb_prem']:+.2f}%</b>")
     if c.get("kimp") is not None:
-        krw = f" <i>(환율 {c['usdkrw']:,.0f})</i>" if c.get("usdkrw") else ""
-        L.append(f"  {ar(c['kimp'])} 김프 <b>{c['kimp']:+.2f}%</b>{krw}")
+        L.append(f"  {ar(c['kimp'])} 김프 <b>{c['kimp']:+.2f}%</b>")
     if c.get("upbit_vol_jo") is not None:
-        L.append(f"  {ar(c.get('upvol_d5'))} 업비트 거래대금 <b>{c['upbit_vol_jo']:.1f}조</b>"
-                 + d520(c.get("upvol_d5"), c.get("upvol_d20")))
+        chg = f" <b>{c['upvol_chg']:+.1f}%</b>" if c.get("upvol_chg") is not None else ""
+        L.append(f"  {ar(c.get('upvol_chg'))} 업비트 거래대금 "
+                 f"<b>{c['upbit_vol_jo']:.1f}조</b>{chg}")
     for key, nm in (("btc", "비트코인"), ("eth", "이더리움")):
         x = c.get(key)
         if x:
@@ -358,7 +349,9 @@ def section_crypto(c):
                      f"<b>{x['chg']:+.2f}%</b> <i>(24h)</i>")
     t3 = c.get("total3es")
     if t3:
-        chg = f" <b>{t3['chg']:+.2f}%</b>" if t3.get("chg") is not None else ""
+        lab = "전일比" if t3.get("basis") == "hist" else "24h"
+        chg = (f" <b>{t3['chg']:+.2f}%</b> <i>({lab})</i>"
+               if t3.get("chg") is not None else "")
         L.append(f"  {ar(t3.get('chg'))} TOTAL3ES <b>{t3['b']:,.0f}B</b>{chg}")
     return "\n".join(L) if len(L) > 1 else ""
 
