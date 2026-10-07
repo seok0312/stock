@@ -55,8 +55,8 @@ def is_sss(e) -> bool:
     nm = e.get("name_kr") or e.get("name") or ""
     raw = e.get("name") or ""
     c = e.get("country")
-    if src_ in ("holidays", "kr_expiry", "kr_ipo", "us_ipo"):
-        return True          # IPO 는 국내외 모두 SSS (09-30 사용자, 해외는 $1B+ 만 수집)
+    if src_ in ("holidays", "kr_expiry", "kr_ipo", "us_ipo", "kr_earnings"):
+        return True          # IPO 국내외(해외 $1B+)·국내 핵심 실적(삼전 잠정·하이닉스)은 SSS
     if src_ == "us_earnings":
         return (raw.split() or [""])[0] in SSS_EARN
     if src_ == "custom":
@@ -439,6 +439,53 @@ def _ipo_live_pct(name: str, po: float):
         return (cur / po - 1) * 100, cur, "공모가"
     except Exception:
         return None, None, None
+
+
+# 확정 공시일 — 분기 라벨("YYYYQn") → "YYYYMMDDHHMM". 날짜가 공시·보도로 확정되면
+# 여기 넣어 패턴 추정을 덮어쓴다(잠정일 꼬리표도 사라짐). 10-08 삼전 잠정은 사용자 확인.
+KR_EARN_EXACT = {
+    ("삼성전자", "2026Q3"): "202610080830",
+}
+
+
+@provider("kr_earnings")
+def _kr_earnings(start: datetime, end: datetime) -> list:
+    """국내 핵심 실적 — 삼성전자 잠정실적 + SK하이닉스 실적 (10-08 사용자).
+
+    정확한 예정일을 주는 무료 소스가 없어 패턴 추정으로 생성한다:
+      삼성전자 잠정 = 분기 다음달 8일경(주말이면 월요일) 08:30 — 역사적으로 5~9일
+      SK하이닉스   = 분기 다음달 4번째 목요일 09:00 (콘콜 아침)
+    추정분은 note 에 '잠정일' 을 달고, 확정되면 KR_EARN_EXACT 로 고정한다."""
+    out = []
+    qlab = {1: "4Q", 4: "1Q", 7: "2Q", 10: "3Q"}
+    for y in range(start.year, end.year + 1):
+        for m in (1, 4, 7, 10):
+            qkey = f"{y-1}Q4" if m == 1 else f"{y}Q{(m-1)//3}"
+            lab = qlab[m]
+            # 삼성전자 잠정: 8일(토→10, 일→9)
+            d = datetime(y, m, 8, 8, 30, tzinfo=KST)
+            d += timedelta(days={5: 2, 6: 1}.get(d.weekday(), 0))
+            # SK하이닉스: 4번째 목요일
+            first = datetime(y, m, 1, 9, 0, tzinfo=KST)
+            hyx = first + timedelta(days=(3 - first.weekday()) % 7 + 21)
+            for comp, when, est_note in (
+                    ("삼성전자", d, "잠정실적 공시(개장 전)"),
+                    ("SK하이닉스", hyx, "실적 발표·콘퍼런스콜")):
+                ex = KR_EARN_EXACT.get((comp, qkey))
+                tent = ""
+                if ex:
+                    when = datetime.strptime(ex, "%Y%m%d%H%M").replace(tzinfo=KST)
+                else:
+                    tent = " ·잠정일"
+                if not (start <= when <= end):
+                    continue
+                nm = f"{comp} {lab} " + ("잠정실적" if comp == "삼성전자" else "실적")
+                out.append({"when": when, "country": "KR", "name": nm, "name_kr": nm,
+                            "actual": None, "consensus": None, "previous": None,
+                            "unit": None, "vol": "HIGH", "dev": None, "better": None,
+                            "speech": False, "tags": set(), "src": "kr_earnings",
+                            "note": est_note + tent})
+    return out
 
 
 @provider("kr_expiry")
@@ -899,7 +946,7 @@ def brief(events, win, quote_rows=None, sector_names=None, now=None,
         high = e.get("vol") == "HIGH"
         if not is_sss(e):        # SSS 링크 — IPO 포함 is_sss 단일 원천 (09-30 사용자)
             continue
-        if e.get("src") in ("us_earnings", "kr_ipo", "us_ipo", "holidays"):
+        if e.get("src") in ("us_earnings", "kr_earnings", "kr_ipo", "us_ipo", "holidays"):
             if e["when"] > earn_end or n_earn >= 6:
                 continue
             n_earn += 1

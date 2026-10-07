@@ -20,7 +20,7 @@ KST = timezone(timedelta(hours=9))
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = "/var/www/html"
 
-TYPE = {"fxstreet": "지표", "us_earnings": "실적", "kr_ipo": "IPO",
+TYPE = {"fxstreet": "지표", "us_earnings": "실적", "kr_earnings": "실적", "kr_ipo": "IPO",
         "holidays": "휴장", "kr_expiry": "만기", "btc": "코인", "us_ipo": "IPO", "custom": "기타"}
 _MOMYOY = re.compile(r"\((MOM|YOY|QOQ)\)")
 

@@ -62,6 +62,11 @@ tag_track 전방검증(4출구 채점)으로 축적 중 — 한 달 뒤 갭 단�
   "Anthropic·OpenAI 급 놓치지 말 것"). 월간 옵션만기(MEDIUM)도 SSS 라 브리핑 노출.
   역할 분담: 브리핑=임박(지표·실적 모두 7일 — 48h 는 다음 주 고용·CPI 가 안 보여
   09-30 확장, cli 수집 지평 now+8일이 커버), 캘린더=3개월.
+- **국내 핵심 실적(10-08 신설, @provider("kr_earnings"))**: 삼성전자 잠정실적
+  (분기 다음달 8일경 08:30, 주말→월)·SK하이닉스 실적(분기 다음달 4째 목 09:00)
+  — 정확 예정일 무료 소스가 없어 **패턴 추정 + '잠정일' 꼬리표**, 공시·보도로
+  확정되면 events.KR_EARN_EXACT 에 ("삼성전자","2026Q3") 식으로 고정. SSS 승격
+  (is_sss), 캘린더 TYPE=실적. 10-08 삼전 3Q 잠정은 사용자 확인으로 확정 등록.
 - **미국 대형 IPO(09-30 신설, @provider("us_ipo"))**: 나스닥 IPO 캘린더 API
   (api.nasdaq.com/api/ipo/calendar?date=YYYY-MM, Origin/Referer 헤더 필수, 월별
   순회 ≤5개월) upcoming 테이블 → **공모 규모 ≥$1B 만**(스팩·소형 바이오 도배 방지;
