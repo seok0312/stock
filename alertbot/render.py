@@ -319,31 +319,47 @@ def section_key_stocks(win):
 
 
 def section_crypto(c):
-    """📊 크립토 — 공포탐욕·코베프·김프·업비트대금·BTC/ETH(24h)·TOTAL3ES.
-    항목별 독립 — 수집 실패분은 조용히 생략 (10-08 사용자)."""
+    """📊 크립토 — 전 항목 화살표, 공포탐욕·업비트대금은 5/20일 평균 대비,
+    TOTAL3ES 는 B 단위 + 전일比 (10-08 사용자 2차 개편). 실패분은 조용히 생략."""
     if not c:
         return ""
+
+    def ar(v):
+        if v is None:
+            return "▪️"
+        return "🔺" if v > 0 else ("🔽" if v < 0 else "▪️")
+
+    def d520(a, b):
+        parts = []
+        if a is not None:
+            parts.append(f"5일 {a:+.0f}%")
+        if b is not None:
+            parts.append(f"20일 {b:+.0f}%")
+        return f" <i>({' / '.join(parts)})</i>" if parts else ""
+
     L = ["\n📊 <b>크립토</b>"]
     f = c.get("fng")
     if f:
-        prev = f" ← 어제 {f['prev']}" if f.get("prev") is not None else ""
-        L.append(f"  공포탐욕 <b>{f['v']} ({esc(f['label'])})</b>{prev}")
+        diff = None if f.get("prev") is None else f["v"] - f["prev"]
+        L.append(f"  {ar(diff)} 공포탐욕 <b>{f['v']} ({esc(f['label'])})</b>"
+                 + d520(f.get("d5"), f.get("d20")))
     if c.get("cb_prem") is not None:
-        L.append(f"  코베프리미엄 <b>{c['cb_prem']:+.2f}%</b>")
+        L.append(f"  {ar(c['cb_prem'])} 코베프리미엄 <b>{c['cb_prem']:+.2f}%</b>")
     if c.get("kimp") is not None:
         krw = f" <i>(환율 {c['usdkrw']:,.0f})</i>" if c.get("usdkrw") else ""
-        L.append(f"  김프 <b>{c['kimp']:+.2f}%</b>{krw}")
+        L.append(f"  {ar(c['kimp'])} 김프 <b>{c['kimp']:+.2f}%</b>{krw}")
     if c.get("upbit_vol_jo") is not None:
-        L.append(f"  업비트 거래대금 <b>{c['upbit_vol_jo']:.1f}조</b>")
+        L.append(f"  {ar(c.get('upvol_d5'))} 업비트 거래대금 <b>{c['upbit_vol_jo']:.1f}조</b>"
+                 + d520(c.get("upvol_d5"), c.get("upvol_d20")))
     for key, nm in (("btc", "비트코인"), ("eth", "이더리움")):
         x = c.get(key)
         if x:
-            sign = "🔺" if x["chg"] > 0 else ("🔽" if x["chg"] < 0 else "▪️")
-            L.append(f"  {sign} <b>{nm}</b> {x['px']:,.0f} <b>{x['chg']:+.2f}%</b> <i>(24h)</i>")
+            L.append(f"  {ar(x['chg'])} <b>{nm}</b> {x['px']:,.0f} "
+                     f"<b>{x['chg']:+.2f}%</b> <i>(24h)</i>")
     t3 = c.get("total3es")
     if t3:
         chg = f" <b>{t3['chg']:+.2f}%</b>" if t3.get("chg") is not None else ""
-        L.append(f"  TOTAL3ES <b>{t3['t']:.2f}T</b>{chg} <i>(BTC·ETH·스테이블 제외 시총)</i>")
+        L.append(f"  {ar(t3.get('chg'))} TOTAL3ES <b>{t3['b']:,.0f}B</b>{chg}")
     return "\n".join(L) if len(L) > 1 else ""
 
 

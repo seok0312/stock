@@ -50,10 +50,11 @@ DISPLAY = [
     # 달러(원/달러)·VIX — 전일比 전용(퍼프 프록시 없음), 10-08 사용자 포맷 개편
     {"name": "달러",     "src": "snap", "snap": ("yahoo", "KRW=X"), "dp": 1},
     {"name": "VIX",      "src": "snap", "snap": ("widx", ".VIX"),  "dp": 2},
+    # 오일·금: 본장이 사실상 24시간 — after 마켓 개념이 없어 괄호 생략 (10-08)
     {"name": "오일",     "src": "perp", "sym": "CL/USDT:USDT",  "dp": 2,
-     "main": ("mkidx", "energy/CLcv1")},
+     "main": ("mkidx", "energy/CLcv1"), "no_after": True},
     {"name": "금",       "src": "perp", "sym": "XAU/USDT:USDT", "dp": 2,
-     "main": ("mkidx", "metals/GCcv1")},
+     "main": ("mkidx", "metals/GCcv1"), "no_after": True},
     {"name": "나스닥",   "src": "perp", "sym": "QQQ/USDT:USDT", "dp": 2,
      "main": ("widx", ".IXIC")},
     {"name": "코스피",   "src": "kr",   "index": "KOSPI",  "sym": "EWY/USDT:USDT", "dp": 2},
@@ -652,7 +653,8 @@ def fetch_window(slot: str, now: datetime | None = None):
             if spec.get("main"):
                 px, ch, meta = _main_quote(spec["main"])
                 _attach_main(row, px, ch)
-                row["after_pct"] = _after_pct(spec["sym"], meta, end, ex)
+                row["after_pct"] = (None if spec.get("no_after")
+                                    else _after_pct(spec["sym"], meta, end, ex))
                 # 오일·금(24시간 본장)은 전일比 대신 15:30 앵커 스냅샷 기준으로 재계산
                 # → 퍼프와 같은 잣대. 스냅샷 없으면(주말 직후 등) 전日比 유지.
                 recalced = False
