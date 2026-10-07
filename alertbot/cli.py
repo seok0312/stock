@@ -322,13 +322,20 @@ def main(argv=None):
         except Exception as e:
             print(f"  수급 신호 수집 실패(계속 진행): {type(e).__name__}: {e}")
 
+    crypto = None
+    try:                                  # 크립토 섹션 (10-08 사용자) — 실패해도 본편 진행
+        import crypto_sec
+        crypto = crypto_sec.fetch()
+    except Exception as e:
+        print(f"  크립토 수집 실패(계속 진행): {type(e).__name__}: {e}")
+
     sig = sum(1 for r in win["rows"] if r["significant"])
     msg = render.build(win, news=news, us_sectors=us_sectors, kr_impact=kr_impact,
                        leaders=ld, us_leaders=us_leaders, nxt_pm=nxt_pm,
                        events=ev_ctx, us_movers=us_mv,
                        flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집",
-                       trend=trend_sig)
+                       trend=trend_sig, crypto=crypto)
     notify.send(msg, dry_run=args.dry_run)
 
     # 대시보드 결정 패널(①할지·비중 ②타이밍 ③종목) 갱신 — 09-29 사용자.

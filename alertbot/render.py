@@ -269,28 +269,38 @@ def _fmt_after(p):
     return "0.00%" if p == 0 else f"{p:+.2f}%"
 
 
+MACRO_ORDER = ["미국10Y", "달러", "오일", "금"]
+PRICE_ORDER = ["VIX", "나스닥", "SOX", "DRAM", "코스피", "코스닥"]
+
+
+def _quote_line(r):
+    """시황/주가/주요종목 공용 한 줄 포맷."""
+    if r.get("chg_pct") is None:
+        return f"  {esc(r['name'])} — 데이터 없음"
+    star = "★" * r.get("stars", 1 if r.get("significant") else 0)
+    sign = "🔺" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
+    if r.get("kind") == "yield":
+        px = _fmt_px(r['end_px'], r['decimals']) + "%"   # 금리는 고정 2자리 + %
+    else:
+        px = _auto_px(r['end_px'])    # 값의 1/1000 미만 자리 생략 (09-17)
+    lab = esc(r.get("chg_label") or "")
+    if r.get("after_pct") is not None:
+        body = f"<b>{lab}</b> ({_fmt_after(r['after_pct'])})"
+    elif r.get("proxy"):
+        body = f"<b>{lab}</b> <i>({esc(r['proxy'])})</i>"
+    else:
+        body = f"<b>{lab}</b>"
+    return f"  {sign} <b>{esc(r['name'])}</b> {px} {body}{star}"
+
+
 def section_quotes(win):
-    """시황 — 본장 등락률 + 괄호는 본장 '마감 후' 변동만(after).
-    본장이 장중이면 괄호는 항상 0% (09-20 사용자)."""
+    """시황(거시: 금리·달러·오일·금) + 주가(지수: VIX·나스닥·SOX·DRAM·코스피·코스닥)
+    — 10-08 사용자 포맷 개편. 괄호는 본장 '마감 후' 변동만(after)."""
+    by = {r["name"]: r for r in list(win["rows"]) + list(win.get("key_stocks") or [])}
     lines = ["\n📊 <b>시황</b> <i>(after)</i>"]
-    for r in win["rows"]:
-        if r["chg_pct"] is None:
-            lines.append(f"  {esc(r['name'])} — 데이터 없음")
-            continue
-        star = "★" * r.get("stars", 1 if r["significant"] else 0)
-        sign = "🔺" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
-        if r.get("kind") == "yield":
-            px = _fmt_px(r['end_px'], r['decimals']) + "%"   # 금리는 고정 2자리 + %
-        else:
-            px = _auto_px(r['end_px'])    # 값의 1/1000 미만 자리 생략 (09-17)
-        lab = esc(r.get("chg_label") or "")
-        if r.get("after_pct") is not None:
-            body = f"<b>{lab}</b> ({_fmt_after(r['after_pct'])})"
-        elif r.get("proxy"):
-            body = f"<b>{lab}</b> <i>({esc(r['proxy'])})</i>"
-        else:
-            body = f"<b>{lab}</b>"
-        lines.append(f"  {sign} <b>{esc(r['name'])}</b> {px} {body}{star}")
+    lines += [_quote_line(by[n]) for n in MACRO_ORDER if n in by]
+    lines.append("\n📊 <b>주가</b> <i>(after)</i>")
+    lines += [_quote_line(by[n]) for n in PRICE_ORDER if n in by]
     return "\n".join(lines)
 
 
@@ -299,26 +309,42 @@ def section_key_stocks(win):
 
     본장 시세(전일比) + 괄호는 본장 마감 후 변동만(after). 장중이면 항상 0%.
     """
-    rows = win.get("key_stocks") or []
+    rows = [r for r in (win.get("key_stocks") or [])
+            if r["name"] not in PRICE_ORDER]      # SOX·DRAM 은 주가 섹션으로 (10-08)
     if not rows:
         return ""
     lines = ["\n📌 <b>주요 종목</b> <i>(after)</i>"]
-    for r in rows:
-        if r.get("chg_pct") is None:
-            lines.append(f"  {esc(r['name'])} — 데이터 없음")
-            continue
-        star = "★" * r.get("stars", 1 if r["significant"] else 0)
-        sign = "🔺" if r["chg_pct"] > 0 else ("🔽" if r["chg_pct"] < 0 else "▪️")
-        lab = esc(r.get("chg_label") or "")
-        if r.get("after_pct") is not None:
-            body = f"<b>{lab}</b> ({_fmt_after(r['after_pct'])})"
-        elif r.get("proxy"):
-            body = f"<b>{lab}</b> <i>(perp)</i>"
-        else:
-            body = f"<b>{lab}</b>"
-        lines.append(f"  {sign} <b>{esc(r['name'])}</b> "
-                     f"{_auto_px(r['end_px'])} {body}{star}")
+    lines += [_quote_line(r) for r in rows]
     return "\n".join(lines)
+
+
+def section_crypto(c):
+    """📊 크립토 — 공포탐욕·코베프·김프·업비트대금·BTC/ETH(24h)·TOTAL3ES.
+    항목별 독립 — 수집 실패분은 조용히 생략 (10-08 사용자)."""
+    if not c:
+        return ""
+    L = ["\n📊 <b>크립토</b>"]
+    f = c.get("fng")
+    if f:
+        prev = f" ← 어제 {f['prev']}" if f.get("prev") is not None else ""
+        L.append(f"  공포탐욕 <b>{f['v']} ({esc(f['label'])})</b>{prev}")
+    if c.get("cb_prem") is not None:
+        L.append(f"  코베프리미엄 <b>{c['cb_prem']:+.2f}%</b>")
+    if c.get("kimp") is not None:
+        krw = f" <i>(환율 {c['usdkrw']:,.0f})</i>" if c.get("usdkrw") else ""
+        L.append(f"  김프 <b>{c['kimp']:+.2f}%</b>{krw}")
+    if c.get("upbit_vol_jo") is not None:
+        L.append(f"  업비트 거래대금 <b>{c['upbit_vol_jo']:.1f}조</b>")
+    for key, nm in (("btc", "비트코인"), ("eth", "이더리움")):
+        x = c.get(key)
+        if x:
+            sign = "🔺" if x["chg"] > 0 else ("🔽" if x["chg"] < 0 else "▪️")
+            L.append(f"  {sign} <b>{nm}</b> {x['px']:,.0f} <b>{x['chg']:+.2f}%</b> <i>(24h)</i>")
+    t3 = c.get("total3es")
+    if t3:
+        chg = f" <b>{t3['chg']:+.2f}%</b>" if t3.get("chg") is not None else ""
+        L.append(f"  TOTAL3ES <b>{t3['t']:.2f}T</b>{chg} <i>(BTC·ETH·스테이블 제외 시총)</i>")
+    return "\n".join(L) if len(L) > 1 else ""
 
 
 def section_quote_news(win, news):
@@ -660,7 +686,7 @@ def section_flows(fl, cmp=None):
 def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
           flows=None, flows_cmp=None, kr_upjong=None, kr_themes=None, kr_when=None,
           us_leaders=None, events=None, nxt_pm=None, us_movers=None, footer=None,
-          trend=None):
+          trend=None, crypto=None):
     parts = [header(win)]
     for s in (section_summary(win, flows, flows_cmp, events, kr_upjong,
                               us_movers, kr_impact, trend),
@@ -668,6 +694,7 @@ def build(win, news=None, us_sectors=None, kr_impact=None, leaders=None,
               section_events_done(events),
               section_quotes(win),
               section_key_stocks(win),
+              section_crypto(crypto),
               section_quote_news(win, news),
               section_flows(flows, flows_cmp),
               section_kr_sectors(kr_upjong, kr_themes, kr_when or "장중"),

@@ -62,6 +62,17 @@ tag_track 전방검증(4출구 채점)으로 축적 중 — 한 달 뒤 갭 단�
   "Anthropic·OpenAI 급 놓치지 말 것"). 월간 옵션만기(MEDIUM)도 SSS 라 브리핑 노출.
   역할 분담: 브리핑=임박(지표·실적 모두 7일 — 48h 는 다음 주 고용·CPI 가 안 보여
   09-30 확장, cli 수집 지평 now+8일이 커버), 캘린더=3개월.
+- **시황 블록 개편(10-08 사용자 포맷 지정)**: 📊시황(미국10Y·달러·오일·금) /
+  📊주가(VIX·나스닥·SOX·DRAM·코스피·코스닥 — SOX·DRAM 은 KEY_STOCKS 수집 유지,
+  render 가 이름으로 재배치) / 📌주요 종목(삼전·하이닉스만) / **📊크립토 신설**
+  (crypto_sec.py): 공포탐욕(alternative.me)·코베프리미엄(코인베이스/바이낸스 현물)
+  ·김프(업비트 BTC/바이낸스×KRW=X 직접 계산)·업비트 KRW 24h 대금(전 마켓 합)
+  ·BTC/ETH(바이낸스 선물 24h — 사용자 지정 ethusdt.p)·TOTAL3ES(코인게코 global
+  근사 = 총시총-BTC-ETH-USDT-USDC, 전일比는 data/crypto_snap.json diff, 첫날 無).
+  달러=야후 KRW=X(네이버 FX basic 은 메타만 줌), VIX=네이버 widx .VIX. 신규 행은
+  src="snap"(전일比 전용, 괄호 없음). **ETF 순유입(BTC+ETH)은 보류** — farside
+  CF차단·defillama 유료·sosovalue 키 필요. 키 생기면 crypto_sec 에 추가.
+  비트코인 DISPLAY 행은 크립토 섹션으로 대체(참조 없음 확인).
 - **아침 전망 루프(10-08 같은 날 추가, movers.outlook)**: 월~금 08:00 텔레그램 —
   간밤 미국 무버(쏠림 카테고리 + 3%↑ 개별) → **US2KR 매핑**(섹터→국장 섹터·대표주,
   수동 관리 상수)으로 '오늘 국장 파급 후보', + 어제 KR 무버 쏠림·섹터 펄스 메인

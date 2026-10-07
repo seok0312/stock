@@ -47,6 +47,9 @@ INSTRUMENTS = [
 #   mkidx = api.stock.naver.com/marketindex/{path} / widx = /index/{code}/basic
 DISPLAY = [
     {"name": "미국10Y",  "src": "bond", "code": "US10YT=RR"},
+    # 달러(원/달러)·VIX — 전일比 전용(퍼프 프록시 없음), 10-08 사용자 포맷 개편
+    {"name": "달러",     "src": "snap", "snap": ("yahoo", "KRW=X"), "dp": 1},
+    {"name": "VIX",      "src": "snap", "snap": ("widx", ".VIX"),  "dp": 2},
     {"name": "오일",     "src": "perp", "sym": "CL/USDT:USDT",  "dp": 2,
      "main": ("mkidx", "energy/CLcv1")},
     {"name": "금",       "src": "perp", "sym": "XAU/USDT:USDT", "dp": 2,
@@ -55,7 +58,7 @@ DISPLAY = [
      "main": ("widx", ".IXIC")},
     {"name": "코스피",   "src": "kr",   "index": "KOSPI",  "sym": "EWY/USDT:USDT", "dp": 2},
     {"name": "코스닥",   "src": "kr",   "index": "KOSDAQ", "sym": None, "dp": 2},
-    {"name": "비트코인", "src": "perp", "sym": "BTC/USDT:USDT", "dp": 0},
+    # 비트코인 행은 📊 크립토 섹션(crypto_sec)으로 이동 (10-08 사용자)
 ]
 
 # 주요 종목 — 시황 다음 카테고리. 본장 시세(전일比) + 괄호는 마감 후 변동(after).
@@ -602,6 +605,26 @@ def _key_stock_rows(start, end, ex) -> list:
     return out
 
 
+def _row_snap(spec):
+    """전일比 전용 행(달러·VIX) — 창 변동/after 프록시 없음. 실패 시 데이터 없음 행."""
+    px = ch = None
+    kind, code = spec["snap"]
+    try:
+        if kind == "widx":
+            px, ch, _m = _main_quote(("widx", code))
+        else:                              # yahoo 일봉 — KRW=X 등
+            r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/" + code,
+                             params={"range": "5d", "interval": "1d"}, headers=UA,
+                             timeout=12)
+            res = r.json()["chart"]["result"][0]
+            closes = [c for c in res["indicators"]["quote"][0]["close"] if c]
+            if len(closes) >= 2:
+                px, ch = closes[-1], (closes[-1] / closes[-2] - 1) * 100
+    except Exception:
+        pass
+    return {"end_px": px, "chg_pct": ch, "decimals": spec.get("dp", 2)}
+
+
 def _row_bond(spec):
     """금리는 창 기준이 아니라 전일比 — 임의 과거 시점의 금리를 주는 무료 소스가 없다."""
     try:
@@ -657,6 +680,8 @@ def fetch_window(slot: str, now: datetime | None = None):
                     row["after_pct"] = None
         elif spec["src"] == "kr":
             row = _row_kr(spec, start, end, ex)
+        elif spec["src"] == "snap":
+            row = _row_snap(spec)
         elif spec["src"] == "bond":
             row = _row_bond(spec)
             # 연휴·주말 창: 전일比 대신 창 시작일 15:30 앵커(스냅샷) 대비 bp —
@@ -686,8 +711,10 @@ def fetch_window(slot: str, now: datetime | None = None):
                 row["stars"] = _star_level(c, _sigma_index(spec["index"]))
             elif spec["src"] == "perp" or row.get("perp_pct") is not None or row.get("proxy"):
                 row["stars"] = _star_level(c, _sigma_perp(spec.get("sym"), ex), hours)
-            else:
-                row["stars"] = _star_level(c, _sigma_index(spec["index"]))
+            else:                     # snap(달러·VIX) 등 index 없는 전일比 행
+                row["stars"] = _star_level(
+                    c, _sigma_index(spec["index"]) if spec.get("index")
+                    else SIGMA_FALLBACK_PCT)
         row["significant"] = row["stars"] > 0
         out.append(row)
         time.sleep(0.05)
