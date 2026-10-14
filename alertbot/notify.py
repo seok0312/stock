@@ -62,6 +62,13 @@ def _chunks(text: str, limit: int = LIMIT):
 
 def send(text: str, token: str | None = None, chat_id: str | None = None,
          dry_run: bool = False) -> bool:
+    # 전체 음소거 (10-14 사용자: "알림은 전부 안오게") — alertbot 의 모든 알림이
+    # 이 함수를 거치므로 여기 한 곳에서 차단. 수집·대시보드는 영향 없음.
+    # 복원: /opt/alertbot/MUTE 파일 삭제 (호출마다 확인 — 재시작 불필요).
+    if not dry_run and os.path.exists(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "MUTE")):
+        print(f"[MUTE] 전송 생략: {text.splitlines()[0][:60] if text else ''}")
+        return True
     token = token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
     # 전용 채널을 쓰고 싶으면 ALERTBOT_CHAT_ID 를 지정. 없으면 기존 채널로.
     chat_id = (chat_id or os.environ.get("ALERTBOT_CHAT_ID")
