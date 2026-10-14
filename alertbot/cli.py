@@ -336,7 +336,13 @@ def main(argv=None):
                        flows=fl, flows_cmp=fl_cmp, kr_upjong=kr_upjong, kr_themes=kr_themes, kr_when=kr_when,
                        footer=f"유의미 변동 {sig}/5종 · 자동수집",
                        trend=trend_sig, crypto=crypto)
-    notify.send(msg, dry_run=args.dry_run)
+    # 본편 브리핑 음소거 (10-14 사용자: "종가베팅 알람이 오지 않도록") — 전송만
+    # 생략하고 아래 데이터 수집(결정 패널·predictions·reactions)은 그대로 돌린다.
+    # 되살리기: run.sh 의 CLOSEBET_MUTE 줄 삭제.
+    if os.environ.get("CLOSEBET_MUTE") == "1" and not args.dry_run:
+        print("  [MUTE] 본편 브리핑 전송 생략 (CLOSEBET_MUTE=1)")
+    else:
+        notify.send(msg, dry_run=args.dry_run)
 
     # 대시보드 결정 패널(①할지·비중 ②타이밍 ③종목) 갱신 — 09-29 사용자.
     # 과거 창 수동 재실행이 실시간 패널을 덮지 않게 dry-run 은 제외.
