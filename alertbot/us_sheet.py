@@ -35,6 +35,63 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 IDX = [("S&P500", "^GSPC"), ("나스닥", "^IXIC"), ("VIX", "^VIX"),
        ("WTI", "CL=F"), ("금", "GC=F"), ("미국10Y", "^TNX")]
 GAIN_MIN_B = 1.0          # 상승률 표 거래대금 하한 $1B (10-16 사용자 확정)
+UNIV_CACHE = os.path.join(DATA, "us_univ.json")
+GICS_KR = {"Information Technology": "기술", "Communication Services": "커뮤니케이션",
+           "Consumer Discretionary": "경기소비", "Consumer Staples": "필수소비",
+           "Health Care": "헬스케어", "Financials": "금융", "Industrials": "산업재",
+           "Energy": "에너지", "Materials": "소재", "Utilities": "유틸리티",
+           "Real Estate": "부동산"}
+
+
+def _load_universe() -> list:
+    """S&P500 + 나스닥100 전체(~530) [(sym, name, sec)] — 주 1회 캐시 (10-16
+    사용자: 주요종목 118개 → 전체로). 한글명·섹터는 movers.US_UNIV 수동맵 우선,
+    그 외 섹터는 GICS 한글 변환. 수집 실패 시 캐시 → US_UNIV 폴백."""
+    from movers import US_UNIV
+    manual = {s: (k, sec) for s, k, sec in US_UNIV}
+    now = datetime.now(KST)
+    try:
+        doc = json.load(open(UNIV_CACHE, encoding="utf-8"))
+        if (now - datetime.fromisoformat(doc["built"])).days < 7:
+            return [tuple(x) for x in doc["univ"]]
+    except Exception:
+        doc = None
+    univ: dict = {}
+    try:
+        import csv as _csv
+        import io
+        r = requests.get("https://raw.githubusercontent.com/datasets/"
+                         "s-and-p-500-companies/main/data/constituents.csv",
+                         headers=UA, timeout=20)
+        for row in _csv.DictReader(io.StringIO(r.text)):
+            sym = (row.get("Symbol") or "").strip().replace(".", "-")
+            if sym:
+                univ[sym] = [sym, (row.get("Security") or sym).strip()[:20],
+                             GICS_KR.get((row.get("GICS Sector") or "").strip(), "")]
+        h2 = dict(UA, Origin="https://www.nasdaq.com",
+                  Referer="https://www.nasdaq.com/", Accept="application/json")
+        j = requests.get("https://api.nasdaq.com/api/quote/list-type/nasdaq100",
+                         headers=h2, timeout=20).json()
+        d = j.get("data") or {}
+        rows = (d.get("data") or {}).get("rows") or d.get("rows") or []
+        for x in rows:
+            sym = (x.get("symbol") or "").strip().replace(".", "-")
+            if sym and sym not in univ:
+                nm = (x.get("companyName") or sym).replace(" Common Stock", "")
+                univ[sym] = [sym, nm.strip()[:20], ""]
+        for sym, (kr, sec) in manual.items():
+            univ[sym] = [sym, kr, sec]
+        if len(univ) >= 400:
+            os.makedirs(DATA, exist_ok=True)
+            json.dump({"built": now.isoformat(timespec="seconds"),
+                       "univ": list(univ.values())},
+                      open(UNIV_CACHE, "w", encoding="utf-8"), ensure_ascii=False)
+            return [tuple(x) for x in univ.values()]
+    except Exception as e:
+        print(f"[us_sheet] 유니버스 갱신 실패({type(e).__name__}) — 캐시/수동맵 폴백")
+    if doc:
+        return [tuple(x) for x in doc["univ"]]
+    return US_UNIV
 
 
 def _chart(sym: str):
@@ -90,9 +147,10 @@ def _reason(sym: str, kr: str, now) -> str:
 def collect(now=None) -> dict | None:
     now = now or datetime.now(KST)
     today = now.strftime("%Y%m%d")
-    from movers import US_UNIV
+    univ = _load_universe()
+    print(f"[us_sheet] 유니버스 {len(univ)}종목 스캔")
     rows, stale = [], 0
-    for sym, kr, sec in US_UNIV:
+    for sym, kr, sec in univ:
         got = _chart(sym)
         time.sleep(0.08)
         if not got:
@@ -100,7 +158,7 @@ def collect(now=None) -> dict | None:
         pct, px, dvol, last_d = got
         rows.append({"sym": sym, "name": kr, "sec": sec, "chg": round(pct, 2),
                      "dvol": round(dvol, 1), "last": last_d})
-    if len(rows) < 30:
+    if len(rows) < 100:
         print(f"[us_sheet] 수신 {len(rows)} — 휴장/장애 추정, 생략")
         return None
     sess = max(r["last"] for r in rows)
@@ -126,10 +184,13 @@ def collect(now=None) -> dict | None:
         elif lab == "나스닥" and qqq:
             dv = round(qqq[2], 1)
         if g and sym == "^TNX":
-            # 수익률×10 스케일 → 금리%로, 변동은 %p(전일 대비 금리차)로 표기
-            prev = g[1] / (1 + g[0] / 100)
-            market.append([lab, round(g[1] / 10, 2),
-                           round((g[1] - prev) / 10, 2), None])
+            # 변동은 %p(전일 대비 금리차). ^TNX 스케일은 데이터에 따라 ×10/×1
+            # 혼재 → 값 크기로 자동 판별 (10-16 버그: /10 고정이 0.51 표시)
+            raw = g[1]
+            prev = raw / (1 + g[0] / 100)
+            sc = 10 if raw > 20 else 1
+            market.append([lab, round(raw / sc, 2),
+                           round((raw - prev) / sc, 2), None])
         else:
             market.append([lab, round(g[1], 2) if g else None,
                            g[0] if g else None, dv])
