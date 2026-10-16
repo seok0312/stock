@@ -364,7 +364,7 @@ def _kr_zone(kr):
                            "개인(억)", "외국인(억)", "기관(억)"], "rows": mk,
                "fmts": {"2": "#,##0", "3": PCT, "4": "0.0",
                         "5": NET, "6": NET, "7": NET},
-               "align": {"1": "center"}}]
+               "boldCol": 1, "align": {"1": "center"}}]
     left_end = 1 + 2 + max(len(mk), 1)
     sb, right_end = _stock_blocks(kr["sections"], False, 1)
     end = max(left_end, right_end - 1)
