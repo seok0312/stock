@@ -272,6 +272,7 @@ def push_all() -> int:
         if rec.get("market"):
             blocks.append({
                 "title": "시장",
+                "col": 8, "row": 1,   # H열 상단 고정 — 이유(F열 430px) 폭과 분리 (10-16)
                 "headers": ["", "지수", "등락률", "거래대금(조)",
                             "개인(억)", "외국인(억)", "기관(억)"],
                 "rows": [[m[0], m[1], (m[2] / 100 if m[2] is not None else None),
@@ -292,8 +293,9 @@ def push_all() -> int:
                          "5": "#,##0"},
                 "align": {"1": "center", "2": "center", "3": "center"}})
         payload = {"token": token, "date": d_lab, "asof": rec.get("asof"),
-                   "widths": {"1": 140, "2": 75, "3": 110, "4": 90,
-                              "5": 100, "6": 430, "7": 90},
+                   "widths": {"1": 140, "2": 75, "3": 110, "4": 90, "5": 100,
+                              "6": 430, "7": 30, "8": 80, "9": 80, "10": 80,
+                              "11": 95, "12": 85, "13": 85, "14": 85},
                    "blocks": blocks}
         try:
             resp = requests.post(url, json=payload, timeout=40, allow_redirects=True)
