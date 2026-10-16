@@ -218,7 +218,7 @@ def collect(now=None) -> dict | None:
             f.write(json.dumps(h, ensure_ascii=False) + "\n")
     try:
         st = json.load(open(STATE, encoding="utf-8"))
-        if st.pop(today + "US", None):
+        if st.pop(today, None):          # 통합 탭 — 재수집 시 재전송 (10-16)
             json.dump(st, open(STATE, "w", encoding="utf-8"), ensure_ascii=False)
     except Exception:
         pass
@@ -228,62 +228,9 @@ def collect(now=None) -> dict | None:
 
 
 def push_all() -> int:
-    url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
-    token = os.environ.get("SHEET_WEBHOOK_TOKEN", "").strip()
-    try:
-        hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]
-    except FileNotFoundError:
-        return 0
-    try:
-        state = json.load(open(STATE, encoding="utf-8"))
-    except Exception:
-        state = {}
-    todo = [h for h in hist if not state.get(h["date"] + "US")]
-    if not url:
-        print(f"[us_sheet] 웹훅 미설정 — 보류 {len(todo)}일")
-        return 0
-    n = 0
-    for rec in sorted(todo, key=lambda h: h["date"]):
-        d = datetime.strptime(rec["date"], "%Y%m%d")
-        d_lab = f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]}) 미국"
-        blocks = [{
-            "title": "시장",
-            "headers": ["", "지수", "등락률", "거래대금($B)"],
-            "rows": [[m[0], m[1], (m[2] / 100 if m[2] is not None else None), m[3]]
-                     for m in rec["market"]],
-            "fmts": {"2": "#,##0.00", "3": "[Red]+0.0%;[Blue]-0.0%;0.0%",
-                     "4": "0.0"},
-            "boldCol": 1, "align": {"1": "center"}}]
-        r_next = 1                     # 종목 표도 1행부터 (10-16 사용자)
-        for s in rec["sections"]:
-            blocks.append({
-                "title": s["title"], "col": 7, "row": r_next,
-                "headers": ["종목", "섹터", "등락률", "거래대금($B)", "이유"],
-                "rows": [[r["name"], r["sec"], r["chg"] / 100, r["dvol"],
-                          r["issue"]] for r in s["rows"]],
-                "fmts": {"3": "[Red]+0.0%;[Blue]-0.0%;0.0%", "4": "0.0"},
-                "align": {"1": "center", "2": "center"}})
-            r_next += 2 + max(len(s["rows"]), 1) + 1
-        payload = {"token": token, "date": d_lab, "asof": rec.get("asof"),
-                   "widths": {"1": 80, "2": 85, "3": 80, "4": 100, "5": 30,
-                              "6": 30, "7": 170, "8": 90, "9": 80, "10": 100,
-                              "11": 430},
-                   "blocks": blocks}
-        try:
-            resp = requests.post(url, json=payload, timeout=40, allow_redirects=True)
-            ok = resp.status_code == 200 and "ok" in resp.text[:50].lower()
-        except Exception as e:
-            print(f"[us_sheet] {rec['date']} 전송 실패: {type(e).__name__}")
-            ok = False
-        if ok:
-            state[rec["date"] + "US"] = datetime.now(KST).isoformat(timespec="seconds")
-            n += 1
-            print(f"[us_sheet] {rec['date']} 시트 기록 완료 ({d_lab})")
-        else:
-            print(f"[us_sheet] {rec['date']} 응답 비정상 — 다음 실행 재시도")
-            break
-    json.dump(state, open(STATE, "w", encoding="utf-8"), ensure_ascii=False)
-    return n
+    """통합 탭 푸시는 sheet_top20 이 담당 (10-16: 하루 한 탭, 미국 위·국내 아래)."""
+    import sheet_top20
+    return sheet_top20.push_all()
 
 
 if __name__ == "__main__":

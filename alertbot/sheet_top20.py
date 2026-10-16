@@ -289,75 +289,130 @@ def collect(now=None) -> dict | None:
     return rec
 
 
+def _latest(store: str, date: str):
+    try:
+        for l in open(store, encoding="utf-8"):
+            h = json.loads(l)
+            if h.get("date") == date:
+                return h
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def _mkt_block(title, headers, rows, fmts, row):
+    return {"title": title, "col": 1, "row": row, "headers": headers,
+            "rows": rows, "fmts": fmts, "boldCol": 1, "align": {"1": "center"}}
+
+
+PCT = "[Red]+0.0%;[Blue]-0.0%;0.0%"
+NET = "+#,##0;-#,##0;0"
+
+
+def build_payload(date: str, token: str):
+    """하루 한 탭(미국 위, 국내 아래) 통합 페이로드 (10-16 사용자).
+
+    미국(06:20)·국내(14:30/19/20) 어느 쪽이 푸시하든 그 시점에 가진 양쪽
+    데이터를 합쳐 탭 전체를 재생성한다. 종목 표 컬럼 체계는 한/미 동일
+    (종목·시장·섹터·등락률·거래대금·이유[·수급]) — 열 폭 공유 충돌 방지."""
+    us = _latest(os.path.join(DATA, "us_sheet.jsonl"), date)
+    kr = _latest(STORE, date)
+    d = datetime.strptime(date, "%Y%m%d")
+    d_lab = f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
+    blocks, r_right, r_left = [], 1, 1
+
+    def stock_rows(secs, us_mode):
+        nonlocal r_right
+        for s in secs:
+            if us_mode:
+                hd = ["종목", "시장", "섹터", "등락률", "거래대금($B)", "이유"]
+                rws = [[x["name"], "미국", x["sec"], x["chg"] / 100, x["dvol"],
+                        x["issue"]] for x in s["rows"]]
+                fm = {"4": PCT, "5": "0.0"}
+            else:
+                hd = ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유",
+                      "개인(억)", "외국인(억)", "기관(억)"]
+                rws = [[x["name"], x["mkt"], x.get("sec") or "", x["chg"] / 100,
+                        x["amt_eok"], x["issue"],
+                        (x.get("flow") or {}).get("p"),
+                        (x.get("flow") or {}).get("f"),
+                        (x.get("flow") or {}).get("i")] for x in s["rows"]]
+                fm = {"4": PCT, "5": "#,##0", "7": NET, "8": NET, "9": NET}
+            blocks.append({"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
+                           "col": 9, "row": r_right, "headers": hd, "rows": rws,
+                           "fmts": fm,
+                           "align": {"1": "center", "2": "center", "3": "center"}})
+            r_right += 2 + max(len(rws), 1) + 1
+
+    if us:
+        blocks.append(_mkt_block(f"🇺🇸 시장 ({us.get('asof', '')})",
+                                 ["", "지수", "등락률", "거래대금($B)"],
+                                 [[m[0], m[1],
+                                   (m[2] / 100 if m[2] is not None else None), m[3]]
+                                  for m in us.get("market") or []],
+                                 {"2": "#,##0.00", "3": PCT, "4": "0.0"}, r_left))
+        r_left += 2 + max(len(us.get("market") or []), 1) + 1
+        stock_rows(us["sections"], True)
+    if kr:
+        r_kr = max(r_left, r_right) if us else 1
+        r_right = max(r_right, r_kr)
+        blocks.append(_mkt_block(f"🇰🇷 시장 ({kr.get('asof', '')})",
+                                 ["", "지수", "등락률", "거래대금(조)",
+                                  "개인(억)", "외국인(억)", "기관(억)"],
+                                 [[m[0], m[1],
+                                   (m[2] / 100 if m[2] is not None else None),
+                                   m[3], m[4], m[5], m[6]]
+                                  for m in kr.get("market") or []],
+                                 {"2": "#,##0", "3": PCT, "4": "0.0",
+                                  "5": NET, "6": NET, "7": NET}, r_kr))
+        stock_rows(kr["sections"], False)
+    if not blocks:
+        return None, d_lab
+    payload = {"token": token, "date": d_lab,
+               "widths": {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85,
+                          "6": 85, "7": 85, "8": 30, "9": 140, "10": 75,
+                          "11": 110, "12": 90, "13": 100, "14": 430,
+                          "15": 85, "16": 85, "17": 85},
+               "blocks": blocks}
+    return payload, d_lab
+
+
 def push_all() -> int:
+    """미전송 날짜(한/미 합집합) 전부 통합 탭으로 전송 — 실패 시 다음 실행 재시도."""
     url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
     token = os.environ.get("SHEET_WEBHOOK_TOKEN", "").strip()
-    try:
-        hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]
-    except FileNotFoundError:
-        return 0
+    dates = set()
+    for store in (STORE, os.path.join(DATA, "us_sheet.jsonl")):
+        try:
+            for l in open(store, encoding="utf-8"):
+                h = json.loads(l)
+                if h.get("v") == 2 or "sections" in h:
+                    dates.add(h["date"])
+        except FileNotFoundError:
+            pass
     state = _load_state()
-    todo = [h for h in hist if not state.get(h["date"])]
+    todo = sorted(d for d in dates if not state.get(d))
     if not url:
-        print(f"[top20] SHEET_WEBHOOK_URL 미설정 — 전송 보류 (미전송 {len(todo)}일)")
+        print(f"[sheet] 웹훅 미설정 — 보류 {len(todo)}일")
         return 0
     n = 0
-    for rec in sorted(todo, key=lambda h: h["date"]):
-        if rec.get("v") != 2:
-            state[rec["date"]] = "skip-v1"
+    for date in todo:
+        payload, d_lab = build_payload(date, token)
+        if payload is None:
+            state[date] = "empty"
             continue
-        d = datetime.strptime(rec["date"], "%Y%m%d")
-        d_lab = f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
-        # 범용 렌더러 페이로드(10-16): 표 정의(헤더·서식·열너비)를 서버가 보내므로
-        # 앞으로 레이아웃 변경은 여기서만 — Apps Script 재배포 불필요.
-        blocks = []
-        if rec.get("market"):
-            blocks.append({
-                "title": "시장",      # A1 원위치 (10-16 재변경) — 종목 표가 I7 로 이동
-                "headers": ["", "지수", "등락률", "거래대금(조)",
-                            "개인(억)", "외국인(억)", "기관(억)"],
-                "rows": [[m[0], m[1], (m[2] / 100 if m[2] is not None else None),
-                          m[3], m[4], m[5], m[6]] for m in rec["market"]],
-                "fmts": {"2": "#,##0",                       # 지수 소수점 없음 (10-16)
-                         "3": "[Red]+0.0%;[Blue]-0.0%;0.0%",   # 등락률 상승빨강/하락파랑
-                         "4": "0.0",                           # 거래대금(조) 한 자리
-                         "5": "+#,##0;-#,##0;0", "6": "+#,##0;-#,##0;0",
-                         "7": "+#,##0;-#,##0;0"},
-                "boldCol": 1, "align": {"1": "center"}})
-        r_next = 1                     # 종목 표: 1행, I열(9)부터 세로로 (10-16 변경)
-        for s in rec["sections"]:
-            blocks.append({
-                "title": s["title"], "col": 9, "row": r_next,
-                "headers": ["종목", "시장", "섹터", "등락률", "거래대금(억)",
-                            "이유", "개인(억)", "외국인(억)", "기관(억)"],
-                "rows": [[r["name"], r["mkt"], r.get("sec") or "", r["chg"] / 100,
-                          r["amt_eok"], r["issue"],
-                          (r.get("flow") or {}).get("p"),
-                          (r.get("flow") or {}).get("f"),
-                          (r.get("flow") or {}).get("i")] for r in s["rows"]],
-                "fmts": {"4": "[Red]+0.0%;[Blue]-0.0%;0.0%", "5": "#,##0",
-                         "7": "+#,##0;-#,##0;0", "8": "+#,##0;-#,##0;0",
-                         "9": "+#,##0;-#,##0;0"},
-                "align": {"1": "center", "2": "center", "3": "center"}})
-            r_next += 2 + max(len(s["rows"]), 1) + 1   # 제목+헤더+행들+빈줄
-        payload = {"token": token, "date": d_lab, "asof": rec.get("asof"),
-                   "widths": {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85,
-                              "6": 85, "7": 85, "8": 30, "9": 140, "10": 75,
-                              "11": 110, "12": 90, "13": 100, "14": 430,
-                              "15": 85, "16": 85, "17": 85},
-                   "blocks": blocks}
         try:
             resp = requests.post(url, json=payload, timeout=40, allow_redirects=True)
             ok = resp.status_code == 200 and "ok" in resp.text[:50].lower()
         except Exception as e:
-            print(f"[top20] {rec['date']} 전송 실패: {type(e).__name__}")
+            print(f"[sheet] {date} 전송 실패: {type(e).__name__}")
             ok = False
         if ok:
-            state[rec["date"]] = datetime.now(KST).isoformat(timespec="seconds")
+            state[date] = datetime.now(KST).isoformat(timespec="seconds")
             n += 1
-            print(f"[top20] {rec['date']} 시트 기록 완료 ({d_lab})")
+            print(f"[sheet] {date} 통합 탭 기록 완료 ({d_lab})")
         else:
-            print(f"[top20] {rec['date']} 시트 응답 비정상 — 다음 실행 때 재시도")
+            print(f"[sheet] {date} 응답 비정상 — 다음 실행 재시도")
             break
     _save_state(state)
     return n
