@@ -31,8 +31,9 @@ STORE = os.path.join(DATA, "us_sheet.jsonl")
 STATE = os.path.join(DATA, "sheet_push_state.json")      # KR 과 공유 (키 분리)
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"}
+# ES/NQ 삭제, WTI·금·미10Y 추가 (10-16 사용자). ^TNX 는 수익률×10 스케일.
 IDX = [("S&P500", "^GSPC"), ("나스닥", "^IXIC"), ("VIX", "^VIX"),
-       ("ES선물", "ES=F"), ("NQ선물", "NQ=F")]   # 다우·러셀 제외 (10-16 사용자)
+       ("WTI", "CL=F"), ("금", "GC=F"), ("미국10Y", "^TNX")]
 GAIN_MIN_B = 1.0          # 상승률 표 거래대금 하한 $1B (10-16 사용자 확정)
 
 
@@ -124,8 +125,14 @@ def collect(now=None) -> dict | None:
             dv = round(spy[2], 1)
         elif lab == "나스닥" and qqq:
             dv = round(qqq[2], 1)
-        market.append([lab, round(g[1], 2) if g else None,
-                       g[0] if g else None, dv])
+        if g and sym == "^TNX":
+            # 수익률×10 스케일 → 금리%로, 변동은 %p(전일 대비 금리차)로 표기
+            prev = g[1] / (1 + g[0] / 100)
+            market.append([lab, round(g[1] / 10, 2),
+                           round((g[1] - prev) / 10, 2), None])
+        else:
+            market.append([lab, round(g[1], 2) if g else None,
+                           g[0] if g else None, dv])
     def pack(rs):
         return [{"name": f"{r['name']} ({r['sym']})", "sec": r["sec"],
                  "chg": r["chg"], "dvol": r["dvol"],
