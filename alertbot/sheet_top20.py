@@ -270,157 +270,176 @@ def collect(now=None) -> dict | None:
         {"title": "상승률 TOP 10 (거래대금 상위 50위)", "rows": pack(gain)},
         {"title": "상한가", "rows": pack(lim)},
     ]}
+    # 슬롯 스냅샷 (10-16 사용자: 14:30/19/20 버전을 지우지 않고 적층) —
+    # 같은 날 같은 슬롯만 교체, 다른 슬롯은 보존
+    slot = ("14:30" if now.hour < 17 else "19:00" if (now.hour, now.minute) < (19, 40)
+            else "20:00")
+    rec["slot"] = slot
     hist = []
     try:
         hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]
     except FileNotFoundError:
         pass
-    hist = [h for h in hist if h["date"] != today] + [rec]
+    for h in hist:                         # 구형 레코드 슬롯 소급
+        h.setdefault("slot", "20:00")
+    hist = [h for h in hist if not (h["date"] == today and h["slot"] == slot)] + [rec]
     os.makedirs(DATA, exist_ok=True)
     with open(STORE, "w", encoding="utf-8") as f:
-        for h in hist:
+        for h in hist[-240:]:
             f.write(json.dumps(h, ensure_ascii=False) + "\n")
-    st = _load_state()
-    if st.pop(today, None):
-        _save_state(st)
     print("[top20] " + today + " 수집 — "
           + " · ".join(f"{s['title']} {len(s['rows'])}" for s in rec["sections"])
           + f" · 이유 {sum(1 for s in rec['sections'] for r in s['rows'] if r['issue'])}건")
     return rec
 
 
-def _latest(store: str, date: str):
+PCT = "[Red]+0.0%;[Blue]-0.0%;0.0%"
+NET = "+#,##0;-#,##0;0"
+WIDTHS = {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85, "6": 85, "7": 85,
+          "8": 30, "9": 140, "10": 75, "11": 110, "12": 90, "13": 100,
+          "14": 430, "15": 85, "16": 85, "17": 85}
+
+
+def _stock_blocks(secs, us_mode, r0):
+    """종목 표들(col 9) — (blocks, 끝다음행)."""
+    blocks, r = [], r0
+    for s in secs:
+        if us_mode:
+            hd = ["종목", "시장", "섹터", "등락률", "거래대금($B)", "이유"]
+            rws = [[x["name"], "미국", x["sec"], x["chg"] / 100, x["dvol"],
+                    x["issue"]] for x in s["rows"]]
+            fm = {"4": PCT, "5": "0.0"}
+        else:
+            hd = ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유",
+                  "개인(억)", "외국인(억)", "기관(억)"]
+            rws = [[x["name"], x["mkt"], x.get("sec") or "", x["chg"] / 100,
+                    x["amt_eok"], x["issue"],
+                    (x.get("flow") or {}).get("p"),
+                    (x.get("flow") or {}).get("f"),
+                    (x.get("flow") or {}).get("i")] for x in s["rows"]]
+            fm = {"4": PCT, "5": "#,##0", "7": NET, "8": NET, "9": NET}
+        blocks.append({"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
+                       "col": 9, "row": r, "headers": hd, "rows": rws,
+                       "fmts": fm,
+                       "align": {"1": "center", "2": "center", "3": "center"}})
+        r += 2 + max(len(rws), 1) + 1
+    return blocks, r
+
+
+def _us_zone(us):
+    """미국 존 — 1행부터. (blocks, 높이)."""
+    mk = [[m[0], m[1], (m[2] / 100 if m[2] is not None else None), m[3]]
+          for m in us.get("market") or []]
+    blocks = [{"title": f"🇺🇸 시장 ({us.get('asof', '')})", "col": 1, "row": 1,
+               "headers": ["", "지수", "등락률", "거래대금($B)"], "rows": mk,
+               "fmts": {"2": "#,##0.00", "3": PCT, "4": "0.0"},
+               "boldCol": 1, "align": {"1": "center"}}]
+    left_end = 1 + 2 + max(len(mk), 1)
+    sb, right_end = _stock_blocks(us["sections"], True, 1)
+    return blocks + sb, max(left_end, right_end - 1)
+
+
+def _kr_zone(kr):
+    """국내 존(검은 띠 + 빈 줄 + 내용) — 1행 기준 상대 블록. (blocks, 높이)."""
+    blocks = [{"col": 1, "row": 1, "rows": [[""] * 17], "bg": "#000000"}]
+    mk = [[m[0], m[1], (m[2] / 100 if m[2] is not None else None),
+           m[3], m[4], m[5], m[6]] for m in kr.get("market") or []]
+    blocks.append({"title": f"🇰🇷 시장 ({kr.get('asof', '')} · {kr.get('slot', '')} 판)",
+                   "col": 1, "row": 3,
+                   "headers": ["", "지수", "등락률", "거래대금(조)",
+                               "개인(억)", "외국인(억)", "기관(억)"], "rows": mk,
+                   "fmts": {"2": "#,##0", "3": PCT, "4": "0.0",
+                            "5": NET, "6": NET, "7": NET},
+                   "boldCol": 1, "align": {"1": "center"}})
+    left_end = 3 + 2 + max(len(mk), 1)
+    sb, right_end = _stock_blocks(kr["sections"], False, 3)
+    return blocks + sb, max(left_end, right_end - 1)
+
+
+def _shift(blocks, off):
+    out = []
+    for b in blocks:
+        b = dict(b)
+        b["row"] = b["row"] + off
+        out.append(b)
+    return out
+
+
+def _post(payload):
+    url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
+    if not url:
+        return None
     try:
-        for l in open(store, encoding="utf-8"):
-            h = json.loads(l)
-            if h.get("date") == date:
-                return h
-    except FileNotFoundError:
-        pass
+        r = requests.post(url, json=payload, timeout=40, allow_redirects=True)
+        if r.status_code == 200 and r.text[:30].strip() in ("ok", "created", "exists"):
+            return r.text[:30].strip()
+    except Exception as e:
+        print(f"[sheet] 전송 실패: {type(e).__name__}")
     return None
 
 
-def _mkt_block(title, headers, rows, fmts, row):
-    return {"title": title, "col": 1, "row": row, "headers": headers,
-            "rows": rows, "fmts": fmts, "boldCol": 1, "align": {"1": "center"}}
-
-
-PCT = "[Red]+0.0%;[Blue]-0.0%;0.0%"
-NET = "+#,##0;-#,##0;0"
-
-
-def build_payload(date: str, token: str):
-    """하루 한 탭(미국 위, 국내 아래) 통합 페이로드 (10-16 사용자).
-
-    미국(06:20)·국내(14:30/19/20) 어느 쪽이 푸시하든 그 시점에 가진 양쪽
-    데이터를 합쳐 탭 전체를 재생성한다. 종목 표 컬럼 체계는 한/미 동일
-    (종목·시장·섹터·등락률·거래대금·이유[·수급]) — 열 폭 공유 충돌 방지."""
-    us = _latest(os.path.join(DATA, "us_sheet.jsonl"), date)
-    kr = _latest(STORE, date)
-    d = datetime.strptime(date, "%Y%m%d")
-    d_lab = f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
-    blocks, r_right, r_left = [], 1, 1
-
-    def stock_rows(secs, us_mode):
-        nonlocal r_right
-        for s in secs:
-            if us_mode:
-                hd = ["종목", "시장", "섹터", "등락률", "거래대금($B)", "이유"]
-                rws = [[x["name"], "미국", x["sec"], x["chg"] / 100, x["dvol"],
-                        x["issue"]] for x in s["rows"]]
-                fm = {"4": PCT, "5": "0.0"}
-            else:
-                hd = ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유",
-                      "개인(억)", "외국인(억)", "기관(억)"]
-                rws = [[x["name"], x["mkt"], x.get("sec") or "", x["chg"] / 100,
-                        x["amt_eok"], x["issue"],
-                        (x.get("flow") or {}).get("p"),
-                        (x.get("flow") or {}).get("f"),
-                        (x.get("flow") or {}).get("i")] for x in s["rows"]]
-                fm = {"4": PCT, "5": "#,##0", "7": NET, "8": NET, "9": NET}
-            blocks.append({"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
-                           "col": 9, "row": r_right, "headers": hd, "rows": rws,
-                           "fmts": fm,
-                           "align": {"1": "center", "2": "center", "3": "center"}})
-            r_right += 2 + max(len(rws), 1) + 1
-
-    if us:
-        blocks.append(_mkt_block(f"🇺🇸 시장 ({us.get('asof', '')})",
-                                 ["", "지수", "등락률", "거래대금($B)"],
-                                 [[m[0], m[1],
-                                   (m[2] / 100 if m[2] is not None else None), m[3]]
-                                  for m in us.get("market") or []],
-                                 {"2": "#,##0.00", "3": PCT, "4": "0.0"}, r_left))
-        r_left += 2 + max(len(us.get("market") or []), 1) + 1
-        stock_rows(us["sections"], True)
-    if kr:
-        if us:
-            # 미국/국내 사이 3행 간격, 가운데 행은 검은 띠 (10-16 사용자)
-            base = max(r_left, r_right)
-            blocks.append({"col": 1, "row": base, "rows": [[""] * 17],
-                           "bg": "#000000"})
-            r_kr = base + 2
-        else:
-            r_kr = 1
-        r_right = max(r_right, r_kr)
-        blocks.append(_mkt_block(f"🇰🇷 시장 ({kr.get('asof', '')})",
-                                 ["", "지수", "등락률", "거래대금(조)",
-                                  "개인(억)", "외국인(억)", "기관(억)"],
-                                 [[m[0], m[1],
-                                   (m[2] / 100 if m[2] is not None else None),
-                                   m[3], m[4], m[5], m[6]]
-                                  for m in kr.get("market") or []],
-                                 {"2": "#,##0", "3": PCT, "4": "0.0",
-                                  "5": NET, "6": NET, "7": NET}, r_kr))
-        stock_rows(kr["sections"], False)
-    if not blocks:
-        return None, d_lab
-    payload = {"token": token, "date": d_lab,
-               "widths": {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85,
-                          "6": 85, "7": 85, "8": 30, "9": 140, "10": 75,
-                          "11": 110, "12": 90, "13": 100, "14": 430,
-                          "15": 85, "16": 85, "17": 85},
-               "blocks": blocks}
-    return payload, d_lab
-
-
 def push_all() -> int:
-    """미전송 날짜(한/미 합집합) 전부 통합 탭으로 전송 — 실패 시 다음 실행 재시도."""
-    url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
+    """존 단위 삽입 푸시 (10-16 사용자: 시간대 적층 + 수동 수정 보존).
+
+    탭을 지우지 않는다. 미국 존은 하루 1회 생성(1행~), 국내 존은 새 슬롯마다
+    '미국 존 바로 아래'에 행 삽입 — 기존 존(사용자가 고친 셀 포함)은 그대로
+    아래로 밀린다. 같은 슬롯 재수집은 재전송하지 않아 수동 수정을 덮지 않는다.
+    상태: sheet_push_state.json {date: {"us": bool, "us_h": int, "slots": [...]}}"""
     token = os.environ.get("SHEET_WEBHOOK_TOKEN", "").strip()
-    dates = set()
-    for store in (STORE, os.path.join(DATA, "us_sheet.jsonl")):
-        try:
-            for l in open(store, encoding="utf-8"):
-                h = json.loads(l)
-                if h.get("v") == 2 or "sections" in h:
-                    dates.add(h["date"])
-        except FileNotFoundError:
-            pass
     state = _load_state()
-    todo = sorted(d for d in dates if not state.get(d))
-    if not url:
-        print(f"[sheet] 웹훅 미설정 — 보류 {len(todo)}일")
-        return 0
+    us_hist, kr_hist = {}, {}
+    try:
+        for l in open(os.path.join(DATA, "us_sheet.jsonl"), encoding="utf-8"):
+            h = json.loads(l)
+            us_hist[h["date"]] = h
+    except FileNotFoundError:
+        pass
+    try:
+        for l in open(STORE, encoding="utf-8"):
+            h = json.loads(l)
+            if h.get("v") == 2:
+                h.setdefault("slot", "20:00")
+                kr_hist.setdefault(h["date"], {})[h["slot"]] = h
+    except FileNotFoundError:
+        pass
     n = 0
-    for date in todo:
-        payload, d_lab = build_payload(date, token)
-        if payload is None:
-            state[date] = "empty"
+    for date in sorted(set(us_hist) | set(kr_hist)):
+        st = state.get(date)
+        if isinstance(st, str):            # 구형(탭 재생성 시절) 상태 — 완료 간주
             continue
-        try:
-            resp = requests.post(url, json=payload, timeout=40, allow_redirects=True)
-            ok = resp.status_code == 200 and "ok" in resp.text[:50].lower()
-        except Exception as e:
-            print(f"[sheet] {date} 전송 실패: {type(e).__name__}")
-            ok = False
-        if ok:
-            state[date] = datetime.now(KST).isoformat(timespec="seconds")
-            n += 1
-            print(f"[sheet] {date} 통합 탭 기록 완료 ({d_lab})")
-        else:
-            print(f"[sheet] {date} 응답 비정상 — 다음 실행 재시도")
-            break
+        st = st or {"us": False, "us_h": 0, "slots": []}
+        d = datetime.strptime(date, "%Y%m%d")
+        d_lab = f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
+        us = us_hist.get(date)
+        if us and not st["us"]:
+            blocks, h = _us_zone(us)
+            got = _post({"token": token, "date": d_lab, "mode": "insert_or_create",
+                         "at": 1, "n": h + 1, "widths": WIDTHS, "blocks": blocks})
+            if got:
+                st["us"], st["us_h"] = True, h + 1
+                n += 1
+                print(f"[sheet] {d_lab} 미국 존 기록")
+            else:
+                state[date] = st
+                break
+        # 국내 슬롯: 이른 것부터 삽입 — 매번 미국 존 바로 아래에 끼우므로
+        # 최종 순서는 위에서부터 최신(20:00→19:00→14:30)이 된다.
+        for slot in sorted(kr_hist.get(date, {})):
+            if slot in st["slots"]:
+                continue
+            kr = kr_hist[date][slot]
+            zb, h = _kr_zone(kr)
+            at = st["us_h"] + 1
+            got = _post({"token": token, "date": d_lab, "mode": "insert_or_create",
+                         "at": at, "n": h + 1, "widths": WIDTHS,
+                         "blocks": _shift(zb, at - 1)})
+            if got:
+                st["slots"].append(slot)
+                n += 1
+                print(f"[sheet] {d_lab} 국내 {slot} 존 기록")
+            else:
+                break
+        state[date] = st
     _save_state(state)
     return n
 

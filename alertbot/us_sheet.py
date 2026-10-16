@@ -216,12 +216,8 @@ def collect(now=None) -> dict | None:
     with open(STORE, "w", encoding="utf-8") as f:
         for h in hist[-60:]:
             f.write(json.dumps(h, ensure_ascii=False) + "\n")
-    try:
-        st = json.load(open(STATE, encoding="utf-8"))
-        if st.pop(today, None):          # 통합 탭 — 재수집 시 재전송 (10-16)
-            json.dump(st, open(STATE, "w", encoding="utf-8"), ensure_ascii=False)
-    except Exception:
-        pass
+    # 존 적층 구조(10-16)에선 미국 존은 하루 1회만 — 재수집해도 재푸시하지
+    # 않는다(이미 올라간 존을 중복 삽입하지 않기 위함).
     print(f"[us_sheet] {today} 수집 — 대금 {len(top)} · 상승 {len(gain)} "
           f"(세션 {sess}, 이유 {sum(1 for s in rec['sections'] for r in s['rows'] if r['issue'])}건)")
     return rec
