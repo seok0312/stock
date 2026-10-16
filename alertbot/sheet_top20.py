@@ -151,6 +151,33 @@ def _reason(name: str, code: str, news_mod, now, n_start, tmap) -> str:
     return ("테마: " + "·".join(ths)) if ths else ""
 
 
+def _market_summary():
+    """시장 요약 — [라벨, 지수, 등락률%, 거래대금(조), 개인(억), 외국인(억), 기관(억)].
+    수급·거래대금 = flows(네이버 투자자 동향, 20시엔 당일 확정), 지수·등락률 =
+    네이버 지수 API 마감치(flows 의 close 는 시점 어긋날 수 있어 안 씀)."""
+    import flows
+    try:
+        fl = flows.fetch_all()
+        by = {r["code"]: r for r in fl.get("rows") or []}
+    except Exception:
+        by = {}
+    out = []
+    for code, lab in (("KOSPI", "코스피"), ("KOSDAQ", "코스닥"), ("FUT", "선물")):
+        r = by.get(code) or {}
+        idx = chg = None
+        try:
+            j = requests.get(f"https://m.stock.naver.com/api/index/{code}/price",
+                             params={"pageSize": 1}, headers=NAVER_UA, timeout=10).json()
+            idx, chg = _num(j[0].get("closePrice")), _num(j[0].get("fluctuationsRatio"))
+        except Exception:
+            idx = r.get("close")
+        f = r.get("flow_eok") or {}
+        amt = r.get("amount_won")
+        out.append([lab, idx, chg, round(amt / 1e12, 2) if amt else None,
+                    f.get("개인"), f.get("외국인"), f.get("기관")])
+    return out
+
+
 def collect(now=None) -> dict | None:
     now = now or datetime.now(KST)
     today = now.strftime("%Y%m%d")
@@ -188,7 +215,8 @@ def collect(now=None) -> dict | None:
     def pack(rs):
         return [{"name": r["name"], "mkt": r["mkt"], "amt_eok": r["amt_eok"] or 0,
                  "chg": round(r["chg"], 2), "issue": r.get("issue") or ""} for r in rs]
-    rec = {"date": today, "asof": now.strftime("%m/%d %H:%M"), "v": 2, "sections": [
+    rec = {"date": today, "asof": now.strftime("%m/%d %H:%M"), "v": 2,
+           "market": _market_summary(), "sections": [
         {"title": f"거래대금 상위 {TOP_N}", "rows": pack(top)},
         {"title": "상승률 상위 10 (거래대금 1,000억↑)", "rows": pack(gain)},
         {"title": "상한가", "rows": pack(lim)},
@@ -232,6 +260,7 @@ def push_all() -> int:
         d = datetime.strptime(rec["date"], "%Y%m%d")
         d_lab = f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
         payload = {"token": token, "date": d_lab, "asof": rec.get("asof"),
+                   "market": rec.get("market") or [],
                    "sections": [{"title": s["title"],
                                  "rows": [[r["name"], r["mkt"], r["amt_eok"],
                                            r["chg"], r["issue"]] for r in s["rows"]]}
