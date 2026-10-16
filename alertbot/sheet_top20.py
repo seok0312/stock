@@ -234,12 +234,51 @@ def collect(now=None) -> dict | None:
                     o["issue"] = r["issue"]
                     o["issue_url"] = r["issue_url"]
 
+    # 종목별 수급 (10-17 복원 — 사용자: 다음 주까지 보고 결정) — ka10059 당일,
+    # 백만원→억. 장중(14:35)엔 개인 미공표라 -(외+기) 근사(97.1% 부호 일치).
+    try:
+        import kr_sectors as krs
+        kc = krs._kc()
+    except Exception:
+        kc = None
+    fl_cache: dict = {}
+    for r in top + gain + lim:
+        code = r["code"]
+        if code in fl_cache or kc is None:
+            r["flow"] = fl_cache.get(code)
+            continue
+        try:
+            d, _ = kc.request("ka10059", {"dt": today, "stk_cd": code,
+                                          "amt_qty_tp": "1", "trde_tp": "0",
+                                          "unit_tp": "1"},
+                              endpoint="/api/dostk/stkinfo")
+            rows0 = sorted((x for x in d.get("stk_invsr_orgn") or []),
+                           key=lambda x: x.get("dt") or "", reverse=True)
+            t0 = rows0[0] if rows0 and rows0[0].get("dt") == today else None
+            if t0:
+                f = _num(t0.get("frgnr_invsr")) or 0
+                i = _num(t0.get("orgn")) or 0
+                p = _num(t0.get("ind_invsr"))
+                if not p:
+                    p = -(f + i)
+                fl_cache[code] = {"p": round(p / 100), "f": round(f / 100),
+                                  "i": round(i / 100)}
+            else:
+                fl_cache[code] = None
+        except Exception:
+            fl_cache[code] = None
+        r["flow"] = fl_cache[code]
+        time.sleep(0.25)
+    for r in top + gain + lim:
+        r.setdefault("flow", fl_cache.get(r["code"]))
+
     def pack(rs):
         return [{"code": r["code"], "name": r["name"], "mkt": r["mkt"],
                  "sec": smap.get(r["code"]) or "",
                  "amt_eok": r["amt_eok"] or 0,
                  "chg": round(r["chg"], 2), "issue": r.get("issue") or "",
-                 "issue_url": r.get("issue_url") or ""} for r in rs]
+                 "issue_url": r.get("issue_url") or "",
+                 "flow": r.get("flow")} for r in rs]
     amt200 = [[r["code"], r["name"], r["mkt"], r["amt_eok"]]
               for r in sorted(amt_rows.values(), key=lambda x: -x["amt_eok"])[:200]]
     rec = {"date": today, "asof": now.strftime("%m/%d %H:%M"), "v": 2,
@@ -557,7 +596,7 @@ def _kr_zone(kr):
                "boldCol": 1, "align": {"1": "center"}}]
     left_end = 1 + 2 + max(len(mk), 1)
     sb, right_end = _stock_blocks(kr["sections"], False, 1,
-                                  with_flow=kr.get("slot") == "week")
+                                  with_flow=True)   # 10-17 복원(일일도 수급 표시)
     end = max(left_end, right_end - 1)
     blocks += sb
     blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 17], "bg": "#000000"})
