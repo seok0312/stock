@@ -34,7 +34,6 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 # ES/NQ 삭제, WTI·금·미10Y 추가 (10-16 사용자). ^TNX 는 수익률×10 스케일.
 IDX = [("S&P500", "^GSPC"), ("나스닥", "^IXIC"), ("VIX", "^VIX"),
        ("WTI", "CL=F"), ("금", "GC=F"), ("미국10Y", "^TNX")]
-GAIN_MIN_B = 1.0          # 상승률 표 거래대금 하한 $1B (10-16 사용자 확정)
 UNIV_CACHE = os.path.join(DATA, "us_univ.json")
 GICS_KR = {"Information Technology": "기술", "Communication Services": "커뮤니케이션",
            "Consumer Discretionary": "경기소비", "Consumer Staples": "필수소비",
@@ -167,18 +166,15 @@ def collect(now=None) -> dict | None:
     sess = max(r["last"] for r in rows)
     rows = [r for r in rows if r["last"] == sess]        # 묵은 종목 제외
     top = sorted(rows, key=lambda r: -r["dvol"])[:10]
-    gain = [r for r in rows if r["dvol"] >= GAIN_MIN_B and r["chg"] > 0]
-    gain = sorted(gain, key=lambda r: -r["chg"])[:10]
-    # 상승률 top10 (대금 무관, S&P500+N100 유니버스 內) — 10-16 사용자 최종:
-    # 전체 시장(7천 종목) 스크리너는 "개별 소형주까지 공략 불가"로 제외.
-    gain_all = sorted([r for r in rows if r["chg"] > 0],
-                      key=lambda r: -r["chg"])[:10]
-    all_title = "상승률 상위 10 (대금 무관)"
-    for r in top + gain + gain_all:
+    # 상승률 top10 — $1B 필터 표는 제거(10-16 사용자 상담): 유니버스 자체가
+    # 유동성 필터라 두 표가 60~70% 중복, 필터는 정보만 깎음. 단일 표 확정.
+    gain = sorted([r for r in rows if r["chg"] > 0],
+                  key=lambda r: -r["chg"])[:10]
+    for r in top + gain:
         if "issue" not in r:
             r["issue"] = _reason(r["sym"], r["name"], now)
             time.sleep(0.05)
-            for o in top + gain + gain_all:
+            for o in top + gain:
                 if o["sym"] == r["sym"]:
                     o["issue"] = r["issue"]
     market = []
@@ -209,9 +205,7 @@ def collect(now=None) -> dict | None:
     rec = {"date": today, "asof": f"{now:%m/%d %H:%M} · 미국 {sess} 세션",
            "market": market, "sections": [
                {"title": "달러 거래대금 상위 10", "rows": pack(top)},
-               {"title": f"상승률 상위 10 (거래대금 ${GAIN_MIN_B:.0f}B↑)",
-                "rows": pack(gain)},
-               {"title": all_title, "rows": pack(gain_all)}]}
+               {"title": "상승률 상위 10", "rows": pack(gain)}]}
     hist = []
     try:
         hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]
