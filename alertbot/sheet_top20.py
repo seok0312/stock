@@ -273,7 +273,10 @@ def collect(now=None) -> dict | None:
                  "amt_eok": r["amt_eok"] or 0,
                  "chg": round(r["chg"], 2), "issue": r.get("issue") or "",
                  "flow": r.get("flow")} for r in rs]
+    amt200 = [[r["code"], r["name"], r["mkt"], r["amt_eok"]]
+              for r in sorted(amt_rows.values(), key=lambda x: -x["amt_eok"])[:200]]
     rec = {"date": today, "asof": now.strftime("%m/%d %H:%M"), "v": 2,
+           "amt100": amt200,
            "market": _market_summary(), "sections": [
         {"title": f"거래대금 TOP {TOP_N}", "rows": pack(top)},
         {"title": "상승률 TOP 10 (거래대금 상위 50위)", "rows": pack(gain)},
@@ -356,53 +359,105 @@ def _naver_week_chg(code: str, monday: str):
     return None, None
 
 
-def _build_week(now, hist, kc):
-    """주간 서머리 레코드 — 시장(주간 등락·대금합·수급합) + 종목(주간 집계).
+def _week_flows(code: str, wdates):
+    """시장 주간 수급 — 네이버 trend+bizdate 소급 합 (개인/외인/기관, 억원)."""
+    p = f = o = 0.0
+    got = 0
+    for ds in sorted(wdates):
+        try:
+            r = requests.get(f"https://m.stock.naver.com/api/index/{code}/trend",
+                             params={"bizdate": ds}, headers=NAVER_UA,
+                             timeout=12).json()
+        except Exception:
+            continue
+        if not isinstance(r, dict) or r.get("bizdate") != ds:
+            continue
+        fv, iv = _num(r.get("foreignValue")), _num(r.get("institutionalValue"))
+        if fv is None or iv is None or (fv == 0 and iv == 0):
+            continue
+        pv = _num(r.get("individualValue"))
+        p += pv if pv is not None else -(fv + iv)
+        f += fv
+        o += iv
+        got += 1
+        time.sleep(0.05)
+    return (round(p), round(f), round(o)) if got else (None, None, None)
 
-    종목별 주간 수치는 ka10059 일별 행(대금 acc_trde_prica·수급·종가)을 이번 주
-    날짜로 합산 — 후보는 이번 주 일일 표에 등장한 전 종목(code 보유 행).
-    주간 등락률 = 이번 주 마지막 종가 / 전주 마지막 종가."""
+
+def _build_week(now, hist, kc):
+    """주간 서머리 (10-17 2차: ① 시장 수급=네이버 소급 주간 합·대금=저장 일수
+    합+일수 명기 ② 유니버스=일일 대금 top200 합산 상위 100 → ka10059 주간 집계).
+
+    종목 주간 수치(대금·수급·등락)는 ka10059 일별 행 합산 — 전부 주간 정확치."""
     monday_d = now - timedelta(days=now.weekday())
     monday = monday_d.strftime("%Y%m%d")
-    wdates = {(monday_d + timedelta(days=i)).strftime("%Y%m%d") for i in range(6)}
-    wrecs = [h for h in hist if h["date"] in wdates and h.get("slot") != "week"]
+    wdates = []
+    for i2 in range(6):
+        d2 = monday_d + timedelta(days=i2)
+        if d2.date() > now.date() or d2.weekday() >= 5:
+            continue
+        try:
+            import quotes
+            if quotes.kr_holiday(d2):
+                continue
+        except Exception:
+            pass
+        wdates.append(d2.strftime("%Y%m%d"))
+    wset = set(wdates)
+    wrecs = [h for h in hist if h["date"] in wset and h.get("slot") != "week"]
     if not wrecs:
         return None
     by_day = {}
     for h in sorted(wrecs, key=lambda x: (x["date"], x.get("slot") or "")):
-        by_day[h["date"]] = h               # 날짜별 마지막 슬롯이 최종
-    # 시장 주간: 지수·등락 = 네이버 주간, 대금·수급 = 일별 최종판 합
+        by_day[h["date"]] = h
+    # 시장 주간
     mk_rows = []
-    for i, (code, lab) in enumerate((("KOSPI", "코스피"), ("KOSDAQ", "코스닥"),
-                                     ("FUT", "선물"))):
-        amt = p = f = o = 0.0
-        comp = 1.0
-        for h in by_day.values():
-            m = (h.get("market") or [])
-            if len(m) <= i:
-                continue
-            amt += m[i][3] or 0
-            p += m[i][4] or 0
-            f += m[i][5] or 0
-            o += m[i][6] or 0
-            if m[i][2] is not None:
-                comp *= 1 + m[i][2] / 100
+    n_amt_days = 0
+    for i2, (code, lab) in enumerate((("KOSPI", "코스피"), ("KOSDAQ", "코스닥"),
+                                      ("FUT", "선물"))):
         wchg, idxv = _naver_week_chg(code, monday)
-        if code == "FUT" and wchg is None:      # FUT 지수 API 실패 시 일별 컴파운드
+        if wchg is None:
+            comp = 1.0
+            for h in by_day.values():
+                m = h.get("market") or []
+                if len(m) > i2 and m[i2][2] is not None:
+                    comp *= 1 + m[i2][2] / 100
             wchg = (comp - 1) * 100
-            idxv = by_day[max(by_day)]["market"][i][1] if by_day else None
-        mk_rows.append([lab, idxv, wchg, round(amt, 1),
-                        round(p) or None, round(f) or None, round(o) or None])
-    # 종목 후보: 이번 주 일일 표 등장 종목 전부
-    cands = {}
+            idxv = (by_day[max(by_day)]["market"][i2][1]
+                    if by_day and len(by_day[max(by_day)].get("market") or []) > i2
+                    else None)
+        amt = 0.0
+        days = 0
+        for h in by_day.values():
+            m = h.get("market") or []
+            if len(m) > i2 and m[i2][3]:
+                amt += m[i2][3]
+                days += 1
+        n_amt_days = max(n_amt_days, days)
+        p, f, o = _week_flows(code, wdates)
+        mk_rows.append([lab, idxv, wchg, round(amt, 1), p, f, o])
+    # 종목 유니버스: 주간 대금 top200 합산 → 상위 110 후보
+    agg: dict = {}
     for h in by_day.values():
-        for s in h.get("sections") or []:
-            for r in s.get("rows") or []:
-                if r.get("code"):
-                    cands[r["code"]] = {"name": r["name"], "mkt": r["mkt"],
-                                        "sec": r.get("sec") or ""}
+        for code, name, mkt, amt in h.get("amt100") or []:
+            a = agg.setdefault(code, {"name": name, "mkt": mkt, "amt": 0.0})
+            a["amt"] += amt or 0
+    if not agg:                              # 과도기 폴백: 일일 표 등장 종목
+        for h in by_day.values():
+            for s in h.get("sections") or []:
+                for r in s.get("rows") or []:
+                    if r.get("code"):
+                        agg[r["code"]] = {"name": r["name"], "mkt": r["mkt"],
+                                          "amt": r.get("amt_eok") or 0}
+    cand_codes = [c for c, _ in sorted(agg.items(), key=lambda kv: -kv[1]["amt"])[:110]]
+    try:
+        import nxt
+        smap = nxt.load_sector_map()
+    except Exception:
+        smap = {}
     rows = []
-    for code, meta in cands.items():
+    for code in cand_codes:
+        meta = agg[code]
         try:
             d, _ = kc.request("ka10059", {"dt": now.strftime("%Y%m%d"),
                                           "stk_cd": code, "amt_qty_tp": "1",
@@ -417,7 +472,7 @@ def _build_week(now, hist, kc):
         for x in drows:
             dt = x.get("dt") or ""
             px = _num(x.get("cur_prc"))
-            if dt in wdates:
+            if dt in wset:
                 wamt += (_num(x.get("acc_trde_prica")) or 0) / 100
                 wp += (_num(x.get("ind_invsr")) or 0) / 100
                 wf += (_num(x.get("frgnr_invsr")) or 0) / 100
@@ -429,22 +484,26 @@ def _build_week(now, hist, kc):
                 break
         if not wamt or not cur or not base:
             continue
-        rows.append({"code": code, **meta, "chg": round((cur / base - 1) * 100, 2),
+        rows.append({"code": code, "name": meta["name"], "mkt": meta["mkt"],
+                     "sec": smap.get(code) or "",
+                     "chg": round((cur / base - 1) * 100, 2),
                      "amt_eok": round(wamt), "issue": "",
                      "flow": {"p": round(wp), "f": round(wf), "i": round(wo)}})
         time.sleep(0.2)
-    top = sorted(rows, key=lambda r: -r["amt_eok"])[:10]
-    pool = sorted(rows, key=lambda r: -r["amt_eok"])[:50]
+    rows.sort(key=lambda r: -r["amt_eok"])
+    top = rows[:10]
+    pool = rows[:100]                        # 주간 대금 상위 100 (10-17 사용자)
     gain = sorted([r for r in pool if r["chg"] > 0], key=lambda r: -r["chg"])[:10]
     lab = f"{monday_d.month}/{monday_d.day:02d}~{now.month}/{now.day:02d}"
+    note = (f" · 시장 대금 {n_amt_days}일 합" if n_amt_days < len(wdates) else "")
     return {"date": now.strftime("%Y%m%d"), "slot": "week", "v": 2,
-            "asof": now.strftime("%m/%d %H:%M"), "week_label": lab,
-            "market": mk_rows, "cands": list(cands),
+            "asof": now.strftime("%m/%d %H:%M"), "cands": cand_codes,
+            "week_label": lab + note,
+            "market": mk_rows,
             "sections": [
                 {"title": f"주간 거래대금 TOP 10 ({lab})", "rows": top},
-                {"title": f"주간 상승률 TOP 10 (주간 대금 상위 50위, {lab})",
+                {"title": f"주간 상승률 TOP 10 (주간 거래대금 상위 100위, {lab})",
                  "rows": gain}]}
-
 
 
 PCT = "[Red]+0.0%;[Blue]-0.0%;0.0%"
