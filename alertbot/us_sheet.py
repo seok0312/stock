@@ -133,7 +133,10 @@ def _yahoo_news(sym: str, hours: int = 22) -> str:
 def _reason(sym: str, kr: str, now) -> str:
     try:
         import news
-        hits = news._pool_match(keywords=(kr, sym), tickers=(sym,), limit=3,
+        # 2글자 티커(IP 등)는 풀 매칭 오염(IPO챗 등) — 한글명 키워드로만 (10-16)
+        kw = (kr, sym) if len(sym) >= 3 else (kr,)
+        tk = (sym,) if len(sym) >= 3 else ()
+        hits = news._pool_match(keywords=kw, tickers=tk, limit=3,
                                 start=now - timedelta(hours=22), end=now)
         for h in hits:
             if not any(w in h["title"] for w in ("시황", "마감", "요약", "다우",
