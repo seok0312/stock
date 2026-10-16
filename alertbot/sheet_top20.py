@@ -354,7 +354,14 @@ def build_payload(date: str, token: str):
         r_left += 2 + max(len(us.get("market") or []), 1) + 1
         stock_rows(us["sections"], True)
     if kr:
-        r_kr = max(r_left, r_right) if us else 1
+        if us:
+            # 미국/국내 사이 3행 간격, 가운데 행은 검은 띠 (10-16 사용자)
+            base = max(r_left, r_right)
+            blocks.append({"col": 1, "row": base, "rows": [[""] * 17],
+                           "bg": "#000000"})
+            r_kr = base + 2
+        else:
+            r_kr = 1
         r_right = max(r_right, r_kr)
         blocks.append(_mkt_block(f"🇰🇷 시장 ({kr.get('asof', '')})",
                                  ["", "지수", "등락률", "거래대금(조)",
