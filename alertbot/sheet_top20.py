@@ -285,15 +285,15 @@ def push_all() -> int:
         for s in rec["sections"]:
             blocks.append({
                 "title": s["title"],
-                "headers": ["종목", "시장", "섹터", "거래대금(억)", "등락률", "이유"],
-                "rows": [[r["name"], r["mkt"], r.get("sec") or "", r["amt_eok"],
-                          r["chg"] / 100, r["issue"]] for r in s["rows"]],
-                "fmts": {"4": "#,##0",
-                         "5": "[Red]+0.0%;[Blue]-0.0%;0.0%"},
+                "headers": ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유"],
+                "rows": [[r["name"], r["mkt"], r.get("sec") or "", r["chg"] / 100,
+                          r["amt_eok"], r["issue"]] for r in s["rows"]],
+                "fmts": {"4": "[Red]+0.0%;[Blue]-0.0%;0.0%",
+                         "5": "#,##0"},
                 "align": {"1": "center", "2": "center", "3": "center"}})
         payload = {"token": token, "date": d_lab, "asof": rec.get("asof"),
-                   "widths": {"1": 140, "2": 75, "3": 110, "4": 100,
-                              "5": 85, "6": 430, "7": 90},
+                   "widths": {"1": 140, "2": 75, "3": 110, "4": 90,
+                              "5": 100, "6": 430, "7": 90},
                    "blocks": blocks}
         try:
             resp = requests.post(url, json=payload, timeout=40, allow_redirects=True)
