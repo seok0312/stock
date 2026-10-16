@@ -31,8 +31,8 @@ STORE = os.path.join(DATA, "us_sheet.jsonl")
 STATE = os.path.join(DATA, "sheet_push_state.json")      # KR 과 공유 (키 분리)
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"}
-IDX = [("S&P500", "^GSPC"), ("나스닥", "^IXIC"), ("다우", "^DJI"),
-       ("러셀2000", "^RUT"), ("VIX", "^VIX"), ("ES선물", "ES=F"), ("NQ선물", "NQ=F")]
+IDX = [("S&P500", "^GSPC"), ("나스닥", "^IXIC"), ("VIX", "^VIX"),
+       ("ES선물", "ES=F"), ("NQ선물", "NQ=F")]   # 다우·러셀 제외 (10-16 사용자)
 GAIN_MIN_B = 1.0          # 상승률 표 거래대금 하한 $1B (10-16 사용자 확정)
 
 
@@ -183,7 +183,7 @@ def push_all() -> int:
             "fmts": {"2": "#,##0.00", "3": "[Red]+0.0%;[Blue]-0.0%;0.0%",
                      "4": "0.0"},
             "boldCol": 1, "align": {"1": "center"}}]
-        r_next = 7
+        r_next = 1                     # 종목 표도 1행부터 (10-16 사용자)
         for s in rec["sections"]:
             blocks.append({
                 "title": s["title"], "col": 7, "row": r_next,

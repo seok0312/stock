@@ -217,11 +217,50 @@ def collect(now=None) -> dict | None:
                 if o["code"] == r["code"]:
                     o["issue"] = r["issue"]
 
+    # 종목별 수급 (10-16 사용자: 이유 오른쪽에 개인/외인/기관) — ka10059 당일,
+    # 백만원→억. 장중(14:30)엔 개인 미공표라 -(외+기) 근사(97.1% 부호 일치).
+    try:
+        import kr_sectors as krs
+        kc = krs._kc()
+    except Exception:
+        kc = None
+    fl_cache: dict = {}
+    for r in top + gain + lim:
+        code = r["code"]
+        if code in fl_cache or kc is None:
+            r["flow"] = fl_cache.get(code)
+            continue
+        try:
+            d, _ = kc.request("ka10059", {"dt": today, "stk_cd": code,
+                                          "amt_qty_tp": "1", "trde_tp": "0",
+                                          "unit_tp": "1"},
+                              endpoint="/api/dostk/stkinfo")
+            rows0 = sorted((x for x in d.get("stk_invsr_orgn") or []),
+                           key=lambda x: x.get("dt") or "", reverse=True)
+            t0 = rows0[0] if rows0 and rows0[0].get("dt") == today else None
+            if t0:
+                f = _num(t0.get("frgnr_invsr")) or 0
+                i = _num(t0.get("orgn")) or 0
+                p = _num(t0.get("ind_invsr"))
+                if not p:
+                    p = -(f + i)
+                fl_cache[code] = {"p": round(p / 100), "f": round(f / 100),
+                                  "i": round(i / 100)}
+            else:
+                fl_cache[code] = None
+        except Exception:
+            fl_cache[code] = None
+        r["flow"] = fl_cache[code]
+        time.sleep(0.25)
+    for r in top + gain + lim:
+        r.setdefault("flow", fl_cache.get(r["code"]))
+
     def pack(rs):
         return [{"name": r["name"], "mkt": r["mkt"],
                  "sec": smap.get(r["code"]) or "",
                  "amt_eok": r["amt_eok"] or 0,
-                 "chg": round(r["chg"], 2), "issue": r.get("issue") or ""} for r in rs]
+                 "chg": round(r["chg"], 2), "issue": r.get("issue") or "",
+                 "flow": r.get("flow")} for r in rs]
     rec = {"date": today, "asof": now.strftime("%m/%d %H:%M"), "v": 2,
            "market": _market_summary(), "sections": [
         {"title": f"거래대금 상위 {TOP_N}", "rows": pack(top)},
@@ -282,21 +321,27 @@ def push_all() -> int:
                          "5": "+#,##0;-#,##0;0", "6": "+#,##0;-#,##0;0",
                          "7": "+#,##0;-#,##0;0"},
                 "boldCol": 1, "align": {"1": "center"}})
-        r_next = 7                     # 종목 표: 7행, I열(9)부터 세로로 (10-16)
+        r_next = 1                     # 종목 표: 1행, I열(9)부터 세로로 (10-16 변경)
         for s in rec["sections"]:
             blocks.append({
                 "title": s["title"], "col": 9, "row": r_next,
-                "headers": ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유"],
+                "headers": ["종목", "시장", "섹터", "등락률", "거래대금(억)",
+                            "이유", "개인(억)", "외국인(억)", "기관(억)"],
                 "rows": [[r["name"], r["mkt"], r.get("sec") or "", r["chg"] / 100,
-                          r["amt_eok"], r["issue"]] for r in s["rows"]],
-                "fmts": {"4": "[Red]+0.0%;[Blue]-0.0%;0.0%",
-                         "5": "#,##0"},
+                          r["amt_eok"], r["issue"],
+                          (r.get("flow") or {}).get("p"),
+                          (r.get("flow") or {}).get("f"),
+                          (r.get("flow") or {}).get("i")] for r in s["rows"]],
+                "fmts": {"4": "[Red]+0.0%;[Blue]-0.0%;0.0%", "5": "#,##0",
+                         "7": "+#,##0;-#,##0;0", "8": "+#,##0;-#,##0;0",
+                         "9": "+#,##0;-#,##0;0"},
                 "align": {"1": "center", "2": "center", "3": "center"}})
             r_next += 2 + max(len(s["rows"]), 1) + 1   # 제목+헤더+행들+빈줄
         payload = {"token": token, "date": d_lab, "asof": rec.get("asof"),
                    "widths": {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85,
                               "6": 85, "7": 85, "8": 30, "9": 140, "10": 75,
-                              "11": 110, "12": 90, "13": 100, "14": 430},
+                              "11": 110, "12": 90, "13": 100, "14": 430,
+                              "15": 85, "16": 85, "17": 85},
                    "blocks": blocks}
         try:
             resp = requests.post(url, json=payload, timeout=40, allow_redirects=True)
