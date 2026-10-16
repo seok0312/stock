@@ -268,7 +268,7 @@ def collect(now=None) -> dict | None:
         r.setdefault("flow", fl_cache.get(r["code"]))
 
     def pack(rs):
-        return [{"name": r["name"], "mkt": r["mkt"],
+        return [{"code": r["code"], "name": r["name"], "mkt": r["mkt"],
                  "sec": smap.get(r["code"]) or "",
                  "amt_eok": r["amt_eok"] or 0,
                  "chg": round(r["chg"], 2), "issue": r.get("issue") or "",
@@ -303,7 +303,149 @@ def collect(now=None) -> dict | None:
     print("[top20] " + today + " 수집 — "
           + " · ".join(f"{s['title']} {len(s['rows'])}" for s in rec["sections"])
           + f" · 이유 {sum(1 for s in rec['sections'] for r in s['rows'] if r['issue'])}건")
+    # 주간 서머리 (10-16 사용자): 주중 마지막 거래일 20:00판 직후 생성
+    if slot == "20:00" and _is_week_last_trading(now):
+        try:
+            wk = _build_week(now, hist, kc)
+            if wk:
+                hist = [h for h in hist
+                        if not (h["date"] == today and h.get("slot") == "week")] + [wk]
+                with open(STORE, "w", encoding="utf-8") as f:
+                    for h in hist[-240:]:
+                        f.write(json.dumps(h, ensure_ascii=False) + "\n")
+                print(f"[top20] 주간 서머리 생성 ({wk['week_label']}, "
+                      f"{len(wk['cands'])}종목 집계)")
+        except Exception as e:
+            print(f"[top20] 주간 서머리 실패(계속): {type(e).__name__}: {e}")
     return rec
+
+
+def _is_week_last_trading(now) -> bool:
+    """오늘이 이번 주 마지막 거래일인가 — 남은 평일이 전부 휴장이면 True."""
+    if now.weekday() >= 5:
+        return False
+    try:
+        import quotes
+    except Exception:
+        return now.weekday() == 4
+    d = now + timedelta(days=1)
+    while d.weekday() < 5:
+        try:
+            if not quotes.kr_holiday(d):
+                return False
+        except Exception:
+            return False
+        d += timedelta(days=1)
+    return True
+
+
+def _naver_week_chg(code: str, monday: str):
+    """지수 주간 등락률% — 이번 주 마지막 종가 vs 전주 마지막 종가 (네이버)."""
+    try:
+        j = requests.get(f"https://m.stock.naver.com/api/index/{code}/price",
+                         params={"pageSize": 15, "page": 1}, headers=NAVER_UA,
+                         timeout=10).json()
+        rows = [(x["localTradedAt"][:10].replace("-", ""),
+                 _num(str(x["closePrice"]).replace(",", ""))) for x in j]
+        cur = next((v for d, v in rows if d >= monday), None)
+        base = next((v for d, v in rows if d < monday), None)
+        if cur and base:
+            return (cur / base - 1) * 100, cur
+    except Exception:
+        pass
+    return None, None
+
+
+def _build_week(now, hist, kc):
+    """주간 서머리 레코드 — 시장(주간 등락·대금합·수급합) + 종목(주간 집계).
+
+    종목별 주간 수치는 ka10059 일별 행(대금 acc_trde_prica·수급·종가)을 이번 주
+    날짜로 합산 — 후보는 이번 주 일일 표에 등장한 전 종목(code 보유 행).
+    주간 등락률 = 이번 주 마지막 종가 / 전주 마지막 종가."""
+    monday_d = now - timedelta(days=now.weekday())
+    monday = monday_d.strftime("%Y%m%d")
+    wdates = {(monday_d + timedelta(days=i)).strftime("%Y%m%d") for i in range(6)}
+    wrecs = [h for h in hist if h["date"] in wdates and h.get("slot") != "week"]
+    if not wrecs:
+        return None
+    by_day = {}
+    for h in sorted(wrecs, key=lambda x: (x["date"], x.get("slot") or "")):
+        by_day[h["date"]] = h               # 날짜별 마지막 슬롯이 최종
+    # 시장 주간: 지수·등락 = 네이버 주간, 대금·수급 = 일별 최종판 합
+    mk_rows = []
+    for i, (code, lab) in enumerate((("KOSPI", "코스피"), ("KOSDAQ", "코스닥"),
+                                     ("FUT", "선물"))):
+        amt = p = f = o = 0.0
+        comp = 1.0
+        for h in by_day.values():
+            m = (h.get("market") or [])
+            if len(m) <= i:
+                continue
+            amt += m[i][3] or 0
+            p += m[i][4] or 0
+            f += m[i][5] or 0
+            o += m[i][6] or 0
+            if m[i][2] is not None:
+                comp *= 1 + m[i][2] / 100
+        if code == "FUT":
+            wchg, idxv = (comp - 1) * 100, (by_day[max(by_day)]["market"][i][1]
+                                            if by_day else None)
+        else:
+            wchg, idxv = _naver_week_chg(code, monday)
+        mk_rows.append([lab, idxv, wchg, round(amt, 1),
+                        round(p) or None, round(f) or None, round(o) or None])
+    # 종목 후보: 이번 주 일일 표 등장 종목 전부
+    cands = {}
+    for h in by_day.values():
+        for s in h.get("sections") or []:
+            for r in s.get("rows") or []:
+                if r.get("code"):
+                    cands[r["code"]] = {"name": r["name"], "mkt": r["mkt"],
+                                        "sec": r.get("sec") or ""}
+    rows = []
+    for code, meta in cands.items():
+        try:
+            d, _ = kc.request("ka10059", {"dt": now.strftime("%Y%m%d"),
+                                          "stk_cd": code, "amt_qty_tp": "1",
+                                          "trde_tp": "0", "unit_tp": "1"},
+                              endpoint="/api/dostk/stkinfo")
+            drows = sorted((x for x in d.get("stk_invsr_orgn") or []),
+                           key=lambda x: x.get("dt") or "", reverse=True)
+        except Exception:
+            continue
+        wamt = wp = wf = wo = 0.0
+        cur = base = None
+        for x in drows:
+            dt = x.get("dt") or ""
+            px = _num(x.get("cur_prc"))
+            if dt in wdates:
+                wamt += (_num(x.get("acc_trde_prica")) or 0) / 100
+                wp += (_num(x.get("ind_invsr")) or 0) / 100
+                wf += (_num(x.get("frgnr_invsr")) or 0) / 100
+                wo += (_num(x.get("orgn")) or 0) / 100
+                if cur is None and px:
+                    cur = abs(px)
+            elif dt < monday and base is None and px:
+                base = abs(px)
+                break
+        if not wamt or not cur or not base:
+            continue
+        rows.append({"code": code, **meta, "chg": round((cur / base - 1) * 100, 2),
+                     "amt_eok": round(wamt), "issue": "",
+                     "flow": {"p": round(wp), "f": round(wf), "i": round(wo)}})
+        time.sleep(0.2)
+    top = sorted(rows, key=lambda r: -r["amt_eok"])[:10]
+    pool = sorted(rows, key=lambda r: -r["amt_eok"])[:50]
+    gain = sorted([r for r in pool if r["chg"] > 0], key=lambda r: -r["chg"])[:10]
+    lab = f"{monday_d.month}/{monday_d.day:02d}~{now.month}/{now.day:02d}"
+    return {"date": now.strftime("%Y%m%d"), "slot": "week", "v": 2,
+            "asof": now.strftime("%m/%d %H:%M"), "week_label": lab,
+            "market": mk_rows, "cands": list(cands),
+            "sections": [
+                {"title": f"주간 거래대금 TOP 10 ({lab})", "rows": top},
+                {"title": f"주간 상승률 TOP 10 (주간 대금 상위 50위, {lab})",
+                 "rows": gain}]}
+
 
 
 PCT = "[Red]+0.0%;[Blue]-0.0%;0.0%"
@@ -339,11 +481,17 @@ def _stock_blocks(secs, us_mode, r0):
     return blocks, r
 
 
+def _date_lab(date: str) -> str:
+    d = datetime.strptime(date, "%Y%m%d")
+    return f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
+
+
 def _us_zone(us):
     """미국 존 — 1행부터. (blocks, 높이)."""
     mk = [[m[0], m[1], (m[2] / 100 if m[2] is not None else None), m[3]]
           for m in us.get("market") or []]
-    blocks = [{"title": f"🇺🇸 시장 ({us.get('asof', '')})", "col": 1, "row": 1,
+    blocks = [{"title": f"🇺🇸 {_date_lab(us['date'])} 시장 ({us.get('asof', '')})",
+               "col": 1, "row": 1,
                "headers": ["", "지수", "등락률", "거래대금($B)"], "rows": mk,
                "fmts": {"2": "#,##0.00", "3": PCT, "4": "0.0"},
                "boldCol": 1, "align": {"1": "center"}}]
@@ -358,10 +506,13 @@ def _kr_zone(kr):
     아래부터 US→14:30→19→20)."""
     mk = [[m[0], m[1], (m[2] / 100 if m[2] is not None else None),
            m[3], m[4], m[5], m[6]] for m in kr.get("market") or []]
-    blocks = [{"title": f"🇰🇷 시장 ({kr.get('asof', '')} · {kr.get('slot', '')} 판)",
+    head = (f"📅 주간 서머리 ({kr.get('week_label', '')})" if kr.get("slot") == "week"
+            else f"🇰🇷 {_date_lab(kr['date'])} 시장 ({kr.get('asof', '')} · "
+                 f"{kr.get('slot', '')} 판)")
+    blocks = [{"title": head,
                "col": 1, "row": 1,
-               "headers": ["", "지수", "등락률", "거래대금(조)",
-                           "개인(억)", "외국인(억)", "기관(억)"], "rows": mk,
+               "headers": ["", "지수", "등락률" + (" (주간)" if kr.get("slot") == "week" else ""),
+                           "거래대금(조)", "개인(억)", "외국인(억)", "기관(억)"], "rows": mk,
                "fmts": {"2": "#,##0", "3": PCT, "4": "0.0",
                         "5": NET, "6": NET, "7": NET},
                "boldCol": 1, "align": {"1": "center"}}]
@@ -431,7 +582,7 @@ def push_all() -> int:
             continue
         st = st or {"us": False, "slots": []}
         d = datetime.strptime(date, "%Y%m%d")
-        d_lab = f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
+        d_lab = f"{d.month}월"            # 월 단위 탭 (10-16 사용자)
         us = us_hist.get(date)
         if us and not st["us"]:
             blocks, h = _us_zone(us)
