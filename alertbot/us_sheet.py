@@ -166,11 +166,14 @@ def collect(now=None) -> dict | None:
     top = sorted(rows, key=lambda r: -r["dvol"])[:10]
     gain = [r for r in rows if r["dvol"] >= GAIN_MIN_B and r["chg"] > 0]
     gain = sorted(gain, key=lambda r: -r["chg"])[:10]
-    for r in top + gain:
+    # 대금 무관 상승률 top10 — 국내 상한가 섹션의 미국판 (10-16 사용자)
+    gain_all = sorted([r for r in rows if r["chg"] > 0],
+                      key=lambda r: -r["chg"])[:10]
+    for r in top + gain + gain_all:
         if "issue" not in r:
             r["issue"] = _reason(r["sym"], r["name"], now)
             time.sleep(0.05)
-            for o in top + gain:
+            for o in top + gain + gain_all:
                 if o["sym"] == r["sym"]:
                     o["issue"] = r["issue"]
     market = []
@@ -202,7 +205,8 @@ def collect(now=None) -> dict | None:
            "market": market, "sections": [
                {"title": "달러 거래대금 상위 10", "rows": pack(top)},
                {"title": f"상승률 상위 10 (거래대금 ${GAIN_MIN_B:.0f}B↑)",
-                "rows": pack(gain)}]}
+                "rows": pack(gain)},
+               {"title": "상승률 상위 10 (전체)", "rows": pack(gain_all)}]}
     hist = []
     try:
         hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]
