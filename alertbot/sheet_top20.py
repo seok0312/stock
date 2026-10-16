@@ -340,20 +340,24 @@ def _us_zone(us):
 
 
 def _kr_zone(kr):
-    """국내 존(검은 띠 + 빈 줄 + 내용) — 1행 기준 상대 블록. (blocks, 높이)."""
-    blocks = [{"col": 1, "row": 1, "rows": [[""] * 17], "bg": "#000000"}]
+    """국내 존 — 내용 먼저, 맨 아래 검은 띠(아래 존과 분리). 1행 기준 상대 블록.
+    모든 존이 맨 위(1행) 삽입이라 시간순으로 위에 쌓인다 (10-16 사용자:
+    아래부터 US→14:30→19→20)."""
     mk = [[m[0], m[1], (m[2] / 100 if m[2] is not None else None),
            m[3], m[4], m[5], m[6]] for m in kr.get("market") or []]
-    blocks.append({"title": f"🇰🇷 시장 ({kr.get('asof', '')} · {kr.get('slot', '')} 판)",
-                   "col": 1, "row": 3,
-                   "headers": ["", "지수", "등락률", "거래대금(조)",
-                               "개인(억)", "외국인(억)", "기관(억)"], "rows": mk,
-                   "fmts": {"2": "#,##0", "3": PCT, "4": "0.0",
-                            "5": NET, "6": NET, "7": NET},
-                   "boldCol": 1, "align": {"1": "center"}})
-    left_end = 3 + 2 + max(len(mk), 1)
-    sb, right_end = _stock_blocks(kr["sections"], False, 3)
-    return blocks + sb, max(left_end, right_end - 1)
+    blocks = [{"title": f"🇰🇷 시장 ({kr.get('asof', '')} · {kr.get('slot', '')} 판)",
+               "col": 1, "row": 1,
+               "headers": ["", "지수", "등락률", "거래대금(조)",
+                           "개인(억)", "외국인(억)", "기관(억)"], "rows": mk,
+               "fmts": {"2": "#,##0", "3": PCT, "4": "0.0",
+                        "5": NET, "6": NET, "7": NET},
+               "boldCol": 1, "align": {"1": "center"}}]
+    left_end = 1 + 2 + max(len(mk), 1)
+    sb, right_end = _stock_blocks(kr["sections"], False, 1)
+    end = max(left_end, right_end - 1)
+    blocks += sb
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 17], "bg": "#000000"})
+    return blocks, end + 2
 
 
 def _shift(blocks, off):
@@ -407,7 +411,7 @@ def push_all() -> int:
         st = state.get(date)
         if isinstance(st, str):            # 구형(탭 재생성 시절) 상태 — 완료 간주
             continue
-        st = st or {"us": False, "us_h": 0, "slots": []}
+        st = st or {"us": False, "slots": []}
         d = datetime.strptime(date, "%Y%m%d")
         d_lab = f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
         us = us_hist.get(date)
@@ -416,23 +420,21 @@ def push_all() -> int:
             got = _post({"token": token, "date": d_lab, "mode": "insert_or_create",
                          "at": 1, "n": h + 1, "widths": WIDTHS, "blocks": blocks})
             if got:
-                st["us"], st["us_h"] = True, h + 1
+                st["us"] = True
                 n += 1
                 print(f"[sheet] {d_lab} 미국 존 기록")
             else:
                 state[date] = st
                 break
-        # 국내 슬롯: 이른 것부터 삽입 — 매번 미국 존 바로 아래에 끼우므로
-        # 최종 순서는 위에서부터 최신(20:00→19:00→14:30)이 된다.
+        # 모든 존을 맨 위(1행) 삽입 — 이른 슬롯부터 처리하면 늦은 슬롯이
+        # 그 위에 쌓여, 위에서부터 20:00→19:00→14:30→미국(맨 아래) 순이 된다.
         for slot in sorted(kr_hist.get(date, {})):
             if slot in st["slots"]:
                 continue
             kr = kr_hist[date][slot]
             zb, h = _kr_zone(kr)
-            at = st["us_h"] + 1
             got = _post({"token": token, "date": d_lab, "mode": "insert_or_create",
-                         "at": at, "n": h + 1, "widths": WIDTHS,
-                         "blocks": _shift(zb, at - 1)})
+                         "at": 1, "n": h, "widths": WIDTHS, "blocks": zb})
             if got:
                 st["slots"].append(slot)
                 n += 1
