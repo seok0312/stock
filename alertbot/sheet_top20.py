@@ -271,8 +271,7 @@ def push_all() -> int:
         blocks = []
         if rec.get("market"):
             blocks.append({
-                "title": "시장",
-                "col": 8, "row": 1,   # H열 상단 고정 — 이유(F열 430px) 폭과 분리 (10-16)
+                "title": "시장",      # A1 원위치 (10-16 재변경) — 종목 표가 I7 로 이동
                 "headers": ["", "지수", "등락률", "거래대금(조)",
                             "개인(억)", "외국인(억)", "기관(억)"],
                 "rows": [[m[0], m[1], (m[2] / 100 if m[2] is not None else None),
@@ -283,19 +282,21 @@ def push_all() -> int:
                          "5": "+#,##0;-#,##0;0", "6": "+#,##0;-#,##0;0",
                          "7": "+#,##0;-#,##0;0"},
                 "boldCol": 1, "align": {"1": "center"}})
+        r_next = 7                     # 종목 표: 7행, I열(9)부터 세로로 (10-16)
         for s in rec["sections"]:
             blocks.append({
-                "title": s["title"],
+                "title": s["title"], "col": 9, "row": r_next,
                 "headers": ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유"],
                 "rows": [[r["name"], r["mkt"], r.get("sec") or "", r["chg"] / 100,
                           r["amt_eok"], r["issue"]] for r in s["rows"]],
                 "fmts": {"4": "[Red]+0.0%;[Blue]-0.0%;0.0%",
                          "5": "#,##0"},
                 "align": {"1": "center", "2": "center", "3": "center"}})
+            r_next += 2 + max(len(s["rows"]), 1) + 1   # 제목+헤더+행들+빈줄
         payload = {"token": token, "date": d_lab, "asof": rec.get("asof"),
-                   "widths": {"1": 140, "2": 75, "3": 110, "4": 90, "5": 100,
-                              "6": 430, "7": 30, "8": 80, "9": 80, "10": 80,
-                              "11": 95, "12": 85, "13": 85, "14": 85},
+                   "widths": {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85,
+                              "6": 85, "7": 85, "8": 30, "9": 140, "10": 75,
+                              "11": 110, "12": 90, "13": 100, "14": 430},
                    "blocks": blocks}
         try:
             resp = requests.post(url, json=payload, timeout=40, allow_redirects=True)
