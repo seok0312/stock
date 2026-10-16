@@ -123,10 +123,10 @@ def _yahoo_news(sym: str, hours: int = 22) -> str:
         cut = datetime.now(timezone.utc).timestamp() - hours * 3600
         for n in j.get("news") or []:
             if (n.get("providerPublishTime") or 0) >= cut and n.get("title"):
-                return n["title"][:90]
+                return n["title"][:90], n.get("link") or ""
     except Exception:
         pass
-    return ""
+    return "", ""
 
 
 def _reason(sym: str, kr: str, now) -> str:
@@ -140,7 +140,7 @@ def _reason(sym: str, kr: str, now) -> str:
         for h in hits:
             if not any(w in h["title"] for w in ("시황", "마감", "요약", "다우",
                                                  "나스닥", "종목 알림", "3대 지수")):
-                return h["title"][:90]
+                return h["title"][:90], h.get("url") or ""
     except Exception:
         pass
     return _yahoo_news(sym)
@@ -172,11 +172,12 @@ def collect(now=None) -> dict | None:
                   key=lambda r: -r["chg"])[:10]
     for r in top + gain:
         if "issue" not in r:
-            r["issue"] = _reason(r["sym"], r["name"], now)
+            r["issue"], r["issue_url"] = _reason(r["sym"], r["name"], now)
             time.sleep(0.05)
             for o in top + gain:
                 if o["sym"] == r["sym"]:
                     o["issue"] = r["issue"]
+                    o["issue_url"] = r["issue_url"]
     market = []
     spy = _chart("SPY"); qqq = _chart("QQQ")
     for i, (lab, sym) in enumerate(IDX):
@@ -201,7 +202,8 @@ def collect(now=None) -> dict | None:
     def pack(rs):
         return [{"name": f"{r['name']} ({r['sym']})", "sec": r["sec"],
                  "chg": r["chg"], "dvol": r["dvol"],
-                 "issue": r.get("issue") or ""} for r in rs]
+                 "issue": r.get("issue") or "",
+                 "issue_url": r.get("issue_url") or ""} for r in rs]
     rec = {"date": today, "asof": f"{now:%m/%d %H:%M} · 미국 {sess} 세션",
            "market": market, "sections": [
                {"title": "거래대금 TOP 10", "rows": pack(top)},

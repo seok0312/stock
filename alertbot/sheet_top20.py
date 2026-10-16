@@ -131,7 +131,7 @@ def _reason(name: str, code: str, news_mod, now, n_start, tmap) -> str:
                                     start=n_start, end=now)
         for h in hits:
             if not any(w in h["title"] for w in NOISE):
-                return h["title"][:90]
+                return h["title"][:90], h.get("url") or ""
     except Exception:
         pass
     try:
@@ -144,11 +144,14 @@ def _reason(name: str, code: str, news_mod, now, n_start, tmap) -> str:
             if str(it.get("datetime") or "").startswith(today8):
                 t = (it.get("title") or "").strip()
                 if t and not any(w in t for w in NOISE):
-                    return t[:90]
+                    u = (f"https://n.news.naver.com/mnews/article/"
+                         f"{it.get('officeId')}/{it.get('articleId')}"
+                         if it.get("officeId") and it.get("articleId") else "")
+                    return t[:90], u
     except Exception:
         pass
     ths = (tmap.get(code) or [])[:2]
-    return ("테마: " + "·".join(ths)) if ths else ""
+    return (("테마: " + "·".join(ths)) if ths else ""), ""
 
 
 def _market_summary():
@@ -223,11 +226,13 @@ def collect(now=None) -> dict | None:
     n_start = now.replace(hour=0, minute=0)
     for r in top + gain + lim:          # 이유 붙이기 (중복 종목은 캐시)
         if "issue" not in r:
-            r["issue"] = _reason(r["name"], r["code"], news, now, n_start, tmap)
+            r["issue"], r["issue_url"] = _reason(r["name"], r["code"], news,
+                                                 now, n_start, tmap)
             time.sleep(0.05)
             for o in top + gain + lim:
                 if o["code"] == r["code"]:
                     o["issue"] = r["issue"]
+                    o["issue_url"] = r["issue_url"]
 
     # 종목별 수급 (10-16 사용자: 이유 오른쪽에 개인/외인/기관) — ka10059 당일,
     # 백만원→억. 장중(14:30)엔 개인 미공표라 -(외+기) 근사(97.1% 부호 일치).
@@ -272,6 +277,7 @@ def collect(now=None) -> dict | None:
                  "sec": smap.get(r["code"]) or "",
                  "amt_eok": r["amt_eok"] or 0,
                  "chg": round(r["chg"], 2), "issue": r.get("issue") or "",
+                 "issue_url": r.get("issue_url") or "",
                  "flow": r.get("flow")} for r in rs]
     amt200 = [[r["code"], r["name"], r["mkt"], r["amt_eok"]]
               for r in sorted(amt_rows.values(), key=lambda x: -x["amt_eok"])[:200]]
@@ -510,31 +516,35 @@ PCT = "[Red]+0.0%;[Blue]-0.0%;0.0%"
 NET = "+#,##0;-#,##0;0"
 WIDTHS = {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85, "6": 85, "7": 85,
           "8": 30, "9": 140, "10": 75, "11": 110, "12": 90, "13": 100,
-          "14": 430, "15": 85, "16": 85, "17": 85}
+          "14": 430, "15": 50, "16": 85, "17": 85, "18": 85}
 
 
 def _stock_blocks(secs, us_mode, r0):
     """종목 표들(col 9) — (blocks, 끝다음행)."""
     blocks, r = [], r0
     for s in secs:
+        def _lnk(x):
+            u = (x.get("issue_url") or "").replace('"', "%22")
+            return f'=HYPERLINK("{u}","🔗")' if u else ""
         if us_mode:
-            hd = ["종목", "시장", "섹터", "등락률", "거래대금($B)", "이유"]
+            hd = ["종목", "시장", "섹터", "등락률", "거래대금($B)", "이유", "링크"]
             rws = [[x["name"], "미국", x["sec"], x["chg"] / 100, x["dvol"],
-                    x["issue"]] for x in s["rows"]]
+                    x["issue"], _lnk(x)] for x in s["rows"]]
             fm = {"4": PCT, "5": "0.0"}
         else:
-            hd = ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유",
+            hd = ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유", "링크",
                   "개인(억)", "외국인(억)", "기관(억)"]
             rws = [[x["name"], x["mkt"], x.get("sec") or "", x["chg"] / 100,
-                    x["amt_eok"], x["issue"],
+                    x["amt_eok"], x["issue"], _lnk(x),
                     (x.get("flow") or {}).get("p"),
                     (x.get("flow") or {}).get("f"),
                     (x.get("flow") or {}).get("i")] for x in s["rows"]]
-            fm = {"4": PCT, "5": "#,##0", "7": NET, "8": NET, "9": NET}
+            fm = {"4": PCT, "5": "#,##0", "8": NET, "9": NET, "10": NET}
         blocks.append({"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
                        "col": 9, "row": r, "headers": hd, "rows": rws,
                        "fmts": fm,
-                       "align": {"1": "center", "2": "center", "3": "center"}})
+                       "align": {"1": "center", "2": "center", "3": "center",
+                                 "7": "center"}})
         r += 2 + max(len(rws), 1) + 1
     return blocks, r
 
