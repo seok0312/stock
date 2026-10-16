@@ -197,6 +197,11 @@ def collect(now=None) -> dict | None:
         tmap = sector_pulse._load_theme_map()
     except Exception:
         tmap = {}
+    try:
+        import nxt
+        smap = nxt.load_sector_map()
+    except Exception:
+        smap = {}
     amt_rows, up_rows = _kiwoom_fetch()
     top = sorted(amt_rows.values(), key=lambda r: -r["amt_eok"])[:TOP_N]
     gain = [r for r in up_rows if (r["amt_eok"] or 0) >= 1000 and r["chg"] > 0]
@@ -213,7 +218,9 @@ def collect(now=None) -> dict | None:
                     o["issue"] = r["issue"]
 
     def pack(rs):
-        return [{"name": r["name"], "mkt": r["mkt"], "amt_eok": r["amt_eok"] or 0,
+        return [{"name": r["name"], "mkt": r["mkt"],
+                 "sec": smap.get(r["code"]) or "",
+                 "amt_eok": r["amt_eok"] or 0,
                  "chg": round(r["chg"], 2), "issue": r.get("issue") or ""} for r in rs]
     rec = {"date": today, "asof": now.strftime("%m/%d %H:%M"), "v": 2,
            "market": _market_summary(), "sections": [
@@ -274,18 +281,19 @@ def push_all() -> int:
                          "4": "0.0",                           # 거래대금(조) 한 자리
                          "5": "+#,##0;-#,##0;0", "6": "+#,##0;-#,##0;0",
                          "7": "+#,##0;-#,##0;0"},
-                "boldCol": 1})
+                "boldCol": 1, "align": {"1": "center"}})
         for s in rec["sections"]:
             blocks.append({
                 "title": s["title"],
-                "headers": ["종목", "시장", "거래대금(억)", "등락률", "이유"],
-                "rows": [[r["name"], r["mkt"], r["amt_eok"], r["chg"] / 100,
-                          r["issue"]] for r in s["rows"]],
-                "fmts": {"3": "#,##0",
-                         "4": "[Red]+0.0%;[Blue]-0.0%;0.0%"}})
+                "headers": ["종목", "시장", "섹터", "거래대금(억)", "등락률", "이유"],
+                "rows": [[r["name"], r["mkt"], r.get("sec") or "", r["amt_eok"],
+                          r["chg"] / 100, r["issue"]] for r in s["rows"]],
+                "fmts": {"4": "#,##0",
+                         "5": "[Red]+0.0%;[Blue]-0.0%;0.0%"},
+                "align": {"1": "center", "2": "center", "3": "center"}})
         payload = {"token": token, "date": d_lab, "asof": rec.get("asof"),
-                   "widths": {"1": 150, "2": 80, "3": 100, "4": 90,
-                              "5": 430, "6": 90, "7": 90},
+                   "widths": {"1": 140, "2": 75, "3": 110, "4": 100,
+                              "5": 85, "6": 430, "7": 90},
                    "blocks": blocks}
         try:
             resp = requests.post(url, json=payload, timeout=40, allow_redirects=True)
