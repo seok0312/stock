@@ -387,11 +387,10 @@ def _build_week(now, hist, kc):
             o += m[i][6] or 0
             if m[i][2] is not None:
                 comp *= 1 + m[i][2] / 100
-        if code == "FUT":
-            wchg, idxv = (comp - 1) * 100, (by_day[max(by_day)]["market"][i][1]
-                                            if by_day else None)
-        else:
-            wchg, idxv = _naver_week_chg(code, monday)
+        wchg, idxv = _naver_week_chg(code, monday)
+        if code == "FUT" and wchg is None:      # FUT 지수 API 실패 시 일별 컴파운드
+            wchg = (comp - 1) * 100
+            idxv = by_day[max(by_day)]["market"][i][1] if by_day else None
         mk_rows.append([lab, idxv, wchg, round(amt, 1),
                         round(p) or None, round(f) or None, round(o) or None])
     # 종목 후보: 이번 주 일일 표 등장 종목 전부
