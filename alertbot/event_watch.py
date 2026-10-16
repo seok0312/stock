@@ -140,6 +140,24 @@ def run(now=None, dry_run=False) -> int:
         if not it.get("sss"):
             continue
         key = f"{today}|{it['t']}|{it['name']}"
+        # 발표예정 예고 — 시작 35분 전 1회 (10-17 사용자: 예정/완료만 살림)
+        pre_key = "pre|" + key
+        if pre_key not in state:
+            try:
+                hh, mm = it["t"].split(":")
+                when_pre = now.replace(hour=int(hh), minute=int(mm), second=0,
+                                       microsecond=0)
+                lead = (when_pre - now).total_seconds() / 60
+                if 0 < lead <= 35:
+                    val = f"\n{esc(it['val'])}" if it.get("val") else ""
+                    notify.send(f"📣 <b>발표예정</b> ({it['t']})\n"
+                                f"{esc(it['name'])}{val}",
+                                dry_run=dry_run, allow_muted=True)
+                    state[pre_key] = now.isoformat(timespec="seconds")
+                    n_sent += 1
+                    print(f"[watch] 예고: {it['name']} ({it['t']})")
+            except Exception:
+                pass
         if key in state:
             continue
         try:
@@ -191,7 +209,7 @@ def run(now=None, dry_run=False) -> int:
             lines = esc(it.get("val") or "") or None
         msg = (f"📢 <b>발표완료</b> ({it['t']})\n{esc(it['name'])}"
                + (f"\n{lines}" if lines else ""))
-        ok = notify.send(msg, dry_run=dry_run)
+        ok = notify.send(msg, dry_run=dry_run, allow_muted=True)
         state[key] = now.isoformat(timespec="seconds")
         n_sent += 1
         print(f"[watch] 알림: {it['name']} ({it['t']}) 발송={ok}")
