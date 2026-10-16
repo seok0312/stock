@@ -94,24 +94,44 @@ def _load_universe() -> list:
 
 
 def _chart(sym: str):
-    """야후 일봉 — (전일比%, 종가, 달러대금 $B, 마지막 봉 날짜) 또는 None."""
+    """야후 일봉(1mo) — (전일比%, 종가, 달러대금 $B, 마지막 봉 MM/DD, bars).
+    bars = [(YYYYMMDD(ET), close, volume)] 과거→최신. 주간 집계(10-17)에 재사용."""
     try:
         r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}",
-                         params={"range": "7d", "interval": "1d"}, headers=UA,
+                         params={"range": "1mo", "interval": "1d"}, headers=UA,
                          timeout=12)
         res = r.json()["chart"]["result"][0]
         q = res["indicators"]["quote"][0]
-        pts = [(t, c, v) for t, c, v in zip(res.get("timestamp") or [],
-                                            q.get("close") or [], q.get("volume") or [])
+        et = timezone(timedelta(hours=-5))
+        pts = [(datetime.fromtimestamp(t, tz=et).strftime("%Y%m%d"), c, v or 0)
+               for t, c, v in zip(res.get("timestamp") or [],
+                                  q.get("close") or [], q.get("volume") or [])
                if c]
         if len(pts) < 2:
             return None
         pct = (pts[-1][1] / pts[-2][1] - 1) * 100
-        dvol = (pts[-1][1] * (pts[-1][2] or 0)) / 1e9
-        d = datetime.fromtimestamp(pts[-1][0], tz=timezone(timedelta(hours=-5)))
-        return pct, pts[-1][1], dvol, d.strftime("%m/%d")
+        dvol = (pts[-1][1] * pts[-1][2]) / 1e9
+        return pct, pts[-1][1], dvol, pts[-1][0][4:6] + "/" + pts[-1][0][6:], pts
     except Exception:
         return None
+
+
+def _week_agg(bars):
+    """bars → (주간 등락률%, 주간 달러대금 $B, 주간 라벨). 마지막 봉 기준 주."""
+    if not bars or len(bars) < 2:
+        return None, None, ""
+    last = bars[-1][0]
+    d = datetime.strptime(last, "%Y%m%d")
+    monday = (d - timedelta(days=d.weekday())).strftime("%Y%m%d")
+    wk = [b for b in bars if b[0] >= monday]
+    prev = [b for b in bars if b[0] < monday]
+    if not wk or not prev:
+        return None, None, ""
+    wchg = (wk[-1][1] / prev[-1][1] - 1) * 100
+    wvol = sum(b[1] * b[2] for b in wk) / 1e9
+    lab = (f"{monday[4:6].lstrip('0') or '0'}/{monday[6:]}~"
+           f"{last[4:6].lstrip('0') or '0'}/{last[6:]}")
+    return wchg, wvol, lab
 
 
 def _yahoo_news(sym: str, hours: int = 22) -> str:
@@ -151,15 +171,22 @@ def collect(now=None) -> dict | None:
     today = now.strftime("%Y%m%d")
     univ = _load_universe()
     print(f"[us_sheet] 유니버스 {len(univ)}종목 스캔")
+    wk_mode = now.weekday() == 5          # 토요일 아침 = 금요 세션 마감 직후 (10-17)
     rows, stale = [], 0
     for sym, kr, sec in univ:
         got = _chart(sym)
         time.sleep(0.08)
         if not got:
             continue
-        pct, px, dvol, last_d = got
-        rows.append({"sym": sym, "name": kr, "sec": sec, "chg": round(pct, 2),
-                     "dvol": round(dvol, 1), "last": last_d})
+        pct, px, dvol, last_d, bars = got
+        row = {"sym": sym, "name": kr, "sec": sec, "chg": round(pct, 2),
+               "dvol": round(dvol, 1), "last": last_d}
+        if wk_mode:
+            wchg, wvol, wlab = _week_agg(bars)
+            if wchg is not None:
+                row["wchg"], row["wvol"], row["wlab"] = (round(wchg, 2),
+                                                         round(wvol, 1), wlab)
+        rows.append(row)
     if len(rows) < 100:
         print(f"[us_sheet] 수신 {len(rows)} — 휴장/장애 추정, 생략")
         return None
@@ -179,6 +206,7 @@ def collect(now=None) -> dict | None:
                     o["issue"] = r["issue"]
                     o["issue_url"] = r["issue_url"]
     market = []
+    market_w = []
     spy = _chart("SPY"); qqq = _chart("QQQ")
     for i, (lab, sym) in enumerate(IDX):
         g = _chart(sym)
@@ -188,6 +216,22 @@ def collect(now=None) -> dict | None:
             dv = round(spy[2], 1)
         elif lab == "나스닥" and qqq:
             dv = round(qqq[2], 1)
+        if wk_mode and g:
+            wchg, _wv, _ = _week_agg(g[4])
+            wdv = None
+            if lab == "S&P500" and spy:
+                wdv = round(_week_agg(spy[4])[1] or 0, 1)
+            elif lab == "나스닥" and qqq:
+                wdv = round(_week_agg(qqq[4])[1] or 0, 1)
+            if sym == "^TNX" and wchg is not None:
+                raw = g[1]
+                sc = 10 if raw > 20 else 1
+                prevw = raw / (1 + wchg / 100)
+                market_w.append([lab, round(raw / sc, 2),
+                                 round((raw - prevw) / sc, 2), None])
+            else:
+                market_w.append([lab, round(g[1], 2),
+                                 wchg if wchg is None else round(wchg, 2), wdv])
         if g and sym == "^TNX":
             # 변동은 %p(전일 대비 금리차). ^TNX 스케일은 데이터에 따라 ×10/×1
             # 혼재 → 값 크기로 자동 판별 (10-16 버그: /10 고정이 0.51 표시)
@@ -213,7 +257,27 @@ def collect(now=None) -> dict | None:
         hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]
     except FileNotFoundError:
         pass
-    hist = [h for h in hist if h["date"] != today] + [rec]
+    hist = [h for h in hist if not (h["date"] == today and not h.get("week"))] + [rec]
+    if wk_mode:
+        wrows = [r for r in rows if r.get("wchg") is not None]
+        wlab = next((r["wlab"] for r in wrows if r.get("wlab")), "")
+        wtop = sorted(wrows, key=lambda r: -(r.get("wvol") or 0))[:15]
+        wgain = sorted([r for r in wrows if r["wchg"] > 0],
+                       key=lambda r: -r["wchg"])[:15]
+
+        def wpack(rs):
+            return [{"name": f"{r['name']} ({r['sym']})", "sec": r["sec"],
+                     "chg": r["wchg"], "dvol": r.get("wvol") or 0,
+                     "issue": "", "issue_url": ""} for r in rs]
+        wrec = {"date": today, "week": True, "v": 2,
+                "asof": f"{now:%m/%d %H:%M} · 주간 {wlab}",
+                "week_label": wlab, "market": market_w,
+                "sections": [
+                    {"title": f"주간 거래대금 TOP 15 ({wlab})", "rows": wpack(wtop)},
+                    {"title": f"주간 상승률 TOP 15 ({wlab})", "rows": wpack(wgain)}]}
+        hist = [h for h in hist
+                if not (h["date"] == today and h.get("week"))] + [wrec]
+        print(f"[us_sheet] 주간 서머리 생성 ({wlab}, {len(wrows)}종목)")
     os.makedirs(DATA, exist_ok=True)
     with open(STORE, "w", encoding="utf-8") as f:
         for h in hist[-60:]:

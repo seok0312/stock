@@ -533,7 +533,10 @@ def _us_zone(us):
                "boldCol": 1, "align": {"1": "center"}}]
     left_end = 1 + 2 + max(len(mk), 1)
     sb, right_end = _stock_blocks(us["sections"], True, 1)
-    return blocks + sb, max(left_end, right_end - 1)
+    end = max(left_end, right_end - 1)
+    blocks += sb
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 18], "bg": "#000000"})
+    return blocks, end + 2
 
 
 def _kr_zone(kr):
@@ -558,6 +561,23 @@ def _kr_zone(kr):
     end = max(left_end, right_end - 1)
     blocks += sb
     blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 17], "bg": "#000000"})
+    return blocks, end + 2
+
+
+def _us_week_zone(usw):
+    """미국 주간 서머리 존 — 토요일 아침, 미국 일일 존 위에 삽입 (10-17)."""
+    mk = [[m[0], m[1], (m[2] / 100 if m[2] is not None else None), m[3]]
+          for m in usw.get("market") or []]
+    blocks = [{"title": f"📅 🇺🇸 미국 주간 서머리 ({usw.get('week_label', '')})",
+               "col": 1, "row": 1,
+               "headers": ["", "지수", "등락률(주간)", "거래대금($B)"], "rows": mk,
+               "fmts": {"2": "#,##0.00", "3": PCT, "4": "0.0"},
+               "boldCol": 1, "align": {"1": "center"}}]
+    left_end = 1 + 2 + max(len(mk), 1)
+    sb, right_end = _stock_blocks(usw["sections"], True, 1)
+    end = max(left_end, right_end - 1)
+    blocks += sb
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 18], "bg": "#000000"})
     return blocks, end + 2
 
 
@@ -593,10 +613,14 @@ def push_all() -> int:
     token = os.environ.get("SHEET_WEBHOOK_TOKEN", "").strip()
     state = _load_state()
     us_hist, kr_hist = {}, {}
+    us_week = {}
     try:
         for l in open(os.path.join(DATA, "us_sheet.jsonl"), encoding="utf-8"):
             h = json.loads(l)
-            us_hist[h["date"]] = h
+            if h.get("week"):
+                us_week[h["date"]] = h
+            else:
+                us_hist[h["date"]] = h
     except FileNotFoundError:
         pass
     try:
@@ -629,6 +653,18 @@ def push_all() -> int:
                 st["us"] = True
                 n += 1
                 print(f"[sheet] {d_lab} 미국 존 기록")
+            else:
+                state[date] = st
+                break
+        usw = us_week.get(date)
+        if usw and "usweek" not in st["slots"]:
+            blocks, h = _us_week_zone(usw)
+            got = _post({"token": token, "date": d_lab, "mode": "insert_or_create",
+                         "at": 1, "n": h + 1, "widths": WIDTHS, "blocks": blocks})
+            if got:
+                st["slots"].append("usweek")
+                n += 1
+                print(f"[sheet] {d_lab} 미국 주간 존 기록")
             else:
                 state[date] = st
                 break
