@@ -32,7 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
 STORE = os.path.join(DATA, "sheet_top20.jsonl")
 STATE = os.path.join(DATA, "sheet_push_state.json")
-TOP_N = 10          # 10-16 사용자: 20은 많다 — 10으로 시작
+TOP_N = 15          # 10-17 사용자: 15로 확대
 EXCL_PAT = re.compile(r"KODEX|TIGER|ACE |PLUS |SOL |RISE |HANARO|KOSEF|KIWOOM |ARIRANG"
                       r"|1Q |스팩|ETN|레버리지|인버스")
 NAVER_UA = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
@@ -218,9 +218,9 @@ def collect(now=None) -> dict | None:
     top = sorted(amt_rows.values(), key=lambda r: -r["amt_eok"])[:TOP_N]
     # 상승률 표 모집단 = 거래대금 상위 50 (10-16 사용자: 1,000억 하드코딩 대신
     # 상대 기준 — 한산한 날에도 활황인 날에도 같은 의미)
-    top50 = sorted(amt_rows.values(), key=lambda r: -r["amt_eok"])[:50]
-    gain = sorted([r for r in top50 if r["chg"] > 0],
-                  key=lambda r: -r["chg"])[:10]
+    top100 = sorted(amt_rows.values(), key=lambda r: -r["amt_eok"])[:100]
+    gain = sorted([r for r in top100 if r["chg"] > 0],
+                  key=lambda r: -r["chg"])[:15]
     lim = sorted([r for r in up_rows if r["chg"] >= 29.5],
                  key=lambda r: -(r["amt_eok"] or 0))
     n_start = now.replace(hour=0, minute=0)
@@ -234,58 +234,19 @@ def collect(now=None) -> dict | None:
                     o["issue"] = r["issue"]
                     o["issue_url"] = r["issue_url"]
 
-    # 종목별 수급 (10-16 사용자: 이유 오른쪽에 개인/외인/기관) — ka10059 당일,
-    # 백만원→억. 장중(14:30)엔 개인 미공표라 -(외+기) 근사(97.1% 부호 일치).
-    try:
-        import kr_sectors as krs
-        kc = krs._kc()
-    except Exception:
-        kc = None
-    fl_cache: dict = {}
-    for r in top + gain + lim:
-        code = r["code"]
-        if code in fl_cache or kc is None:
-            r["flow"] = fl_cache.get(code)
-            continue
-        try:
-            d, _ = kc.request("ka10059", {"dt": today, "stk_cd": code,
-                                          "amt_qty_tp": "1", "trde_tp": "0",
-                                          "unit_tp": "1"},
-                              endpoint="/api/dostk/stkinfo")
-            rows0 = sorted((x for x in d.get("stk_invsr_orgn") or []),
-                           key=lambda x: x.get("dt") or "", reverse=True)
-            t0 = rows0[0] if rows0 and rows0[0].get("dt") == today else None
-            if t0:
-                f = _num(t0.get("frgnr_invsr")) or 0
-                i = _num(t0.get("orgn")) or 0
-                p = _num(t0.get("ind_invsr"))
-                if not p:
-                    p = -(f + i)
-                fl_cache[code] = {"p": round(p / 100), "f": round(f / 100),
-                                  "i": round(i / 100)}
-            else:
-                fl_cache[code] = None
-        except Exception:
-            fl_cache[code] = None
-        r["flow"] = fl_cache[code]
-        time.sleep(0.25)
-    for r in top + gain + lim:
-        r.setdefault("flow", fl_cache.get(r["code"]))
-
     def pack(rs):
         return [{"code": r["code"], "name": r["name"], "mkt": r["mkt"],
                  "sec": smap.get(r["code"]) or "",
                  "amt_eok": r["amt_eok"] or 0,
                  "chg": round(r["chg"], 2), "issue": r.get("issue") or "",
-                 "issue_url": r.get("issue_url") or "",
-                 "flow": r.get("flow")} for r in rs]
+                 "issue_url": r.get("issue_url") or ""} for r in rs]
     amt200 = [[r["code"], r["name"], r["mkt"], r["amt_eok"]]
               for r in sorted(amt_rows.values(), key=lambda x: -x["amt_eok"])[:200]]
     rec = {"date": today, "asof": now.strftime("%m/%d %H:%M"), "v": 2,
            "amt100": amt200,
            "market": _market_summary(), "sections": [
         {"title": f"거래대금 TOP {TOP_N}", "rows": pack(top)},
-        {"title": "상승률 TOP 10 (거래대금 상위 50위)", "rows": pack(gain)},
+        {"title": "상승률 TOP 15 (거래대금 상위 100위)", "rows": pack(gain)},
         {"title": "상한가", "rows": pack(lim)},
     ]}
     # 슬롯 스냅샷 (10-16 사용자: 14:30/19/20 버전을 지우지 않고 적층) —
@@ -519,8 +480,10 @@ WIDTHS = {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85, "6": 85, "7": 85,
           "14": 430, "15": 50, "16": 85, "17": 85, "18": 85}
 
 
-def _stock_blocks(secs, us_mode, r0):
-    """종목 표들(col 9) — (blocks, 끝다음행)."""
+def _stock_blocks(secs, us_mode, r0, with_flow=False):
+    """종목 표들(col 9) — (blocks, 끝다음행).
+    with_flow: 주간 서머리만 True — 일일 표의 종목별 수급 열은 삭제(10-17),
+    주간 '한 주간 수급'은 사용자 명시 요구라 유지."""
     blocks, r = [], r0
     for s in secs:
         def _lnk(x):
@@ -531,7 +494,7 @@ def _stock_blocks(secs, us_mode, r0):
             rws = [[x["name"], "미국", x["sec"], x["chg"] / 100, x["dvol"],
                     x["issue"], _lnk(x)] for x in s["rows"]]
             fm = {"4": PCT, "5": "0.0"}
-        else:
+        elif with_flow:
             hd = ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유", "링크",
                   "개인(억)", "외국인(억)", "기관(억)"]
             rws = [[x["name"], x["mkt"], x.get("sec") or "", x["chg"] / 100,
@@ -540,6 +503,11 @@ def _stock_blocks(secs, us_mode, r0):
                     (x.get("flow") or {}).get("f"),
                     (x.get("flow") or {}).get("i")] for x in s["rows"]]
             fm = {"4": PCT, "5": "#,##0", "8": NET, "9": NET, "10": NET}
+        else:
+            hd = ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유", "링크"]
+            rws = [[x["name"], x["mkt"], x.get("sec") or "", x["chg"] / 100,
+                    x["amt_eok"], x["issue"], _lnk(x)] for x in s["rows"]]
+            fm = {"4": PCT, "5": "#,##0"}
         blocks.append({"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
                        "col": 9, "row": r, "headers": hd, "rows": rws,
                        "fmts": fm,
@@ -585,7 +553,8 @@ def _kr_zone(kr):
                         "5": NET, "6": NET, "7": NET},
                "boldCol": 1, "align": {"1": "center"}}]
     left_end = 1 + 2 + max(len(mk), 1)
-    sb, right_end = _stock_blocks(kr["sections"], False, 1)
+    sb, right_end = _stock_blocks(kr["sections"], False, 1,
+                                  with_flow=kr.get("slot") == "week")
     end = max(left_end, right_end - 1)
     blocks += sb
     blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 17], "bg": "#000000"})

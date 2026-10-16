@@ -165,11 +165,11 @@ def collect(now=None) -> dict | None:
         return None
     sess = max(r["last"] for r in rows)
     rows = [r for r in rows if r["last"] == sess]        # 묵은 종목 제외
-    top = sorted(rows, key=lambda r: -r["dvol"])[:10]
+    top = sorted(rows, key=lambda r: -r["dvol"])[:15]
     # 상승률 top10 — $1B 필터 표는 제거(10-16 사용자 상담): 유니버스 자체가
     # 유동성 필터라 두 표가 60~70% 중복, 필터는 정보만 깎음. 단일 표 확정.
     gain = sorted([r for r in rows if r["chg"] > 0],
-                  key=lambda r: -r["chg"])[:10]
+                  key=lambda r: -r["chg"])[:15]
     for r in top + gain:
         if "issue" not in r:
             r["issue"], r["issue_url"] = _reason(r["sym"], r["name"], now)
@@ -206,8 +206,8 @@ def collect(now=None) -> dict | None:
                  "issue_url": r.get("issue_url") or ""} for r in rs]
     rec = {"date": today, "asof": f"{now:%m/%d %H:%M} · 미국 {sess} 세션",
            "market": market, "sections": [
-               {"title": "거래대금 TOP 10", "rows": pack(top)},
-               {"title": "상승률 TOP 10", "rows": pack(gain)}]}
+               {"title": "거래대금 TOP 15", "rows": pack(top)},
+               {"title": "상승률 TOP 15", "rows": pack(gain)}]}
     hist = []
     try:
         hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]
