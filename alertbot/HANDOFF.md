@@ -69,6 +69,14 @@ tag_track 전방검증(4출구 채점)으로 축적 중 — 한 달 뒤 갭 단�
   "Anthropic·OpenAI 급 놓치지 말 것"). 월간 옵션만기(MEDIUM)도 SSS 라 브리핑 노출.
   역할 분담: 브리핑=임박(지표·실적 모두 7일 — 48h 는 다음 주 고용·CPI 가 안 보여
   09-30 확장, cli 수집 지평 now+8일이 커버), 캘린더=3개월.
+- **거래대금 top20 → 구글시트(10-16 신설, sheet_top20.py)**: 평일 20:00 크론 —
+  보통주(ETF 제외) 거래대금 상위 20 의 [날짜,종목,거래대금(억),등락률,이슈(뉴스
+  풀 제목)] 를 data/sheet_top20.jsonl 에 멱등 저장 후 Apps Script 웹훅으로
+  append. .env 에 SHEET_WEBHOOK_URL / SHEET_WEBHOOK_TOKEN 설정 시 전송,
+  미설정·실패분은 상태파일(sheet_push_state.json) 기준 다음 실행 때 자동 백필.
+  시트 쪽 Apps Script(doPost: 토큰 검증→top20 탭 생성→같은 날짜 삭제 후
+  append=멱등)는 사용자 시트의 확장프로그램에 설치 — 웹 앱 배포(액세스: 모든
+  사용자) 후 /exec URL 을 .env 에. 알림 아님(MUTE 무관).
 - **발표완료 즉시 알림(10-08 신설, event_watch.py)**: 5분 크론 — calendar.json
   (하루 2회 전체 수집본)에서 오늘 SSS 일정을 읽어 **시각이 지나는 순간** 알림.
   지표는 fxstreet 라이브 1콜로 실제값 붙여 "실제 vs 예상 상회/하회"(실제값 미게시
