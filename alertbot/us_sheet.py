@@ -115,6 +115,38 @@ def _chart(sym: str):
         return None
 
 
+def _day_gainers(top: int = 10) -> list:
+    """전체 시장(~7천 종목) 급등주 — 야후 day_gainers 스크리너 100개를 받아
+    등락률순 재정렬(스크리너 자체 정렬이 %순이 아님). +100% 급등 소형주까지
+    포착 (10-16 사용자: 대형주 유니버스 밖 급등주). 페니·저유동 노이즈는
+    가격 $1↑ · 달러대금 $5M↑ 로 거름. 실패 시 [] — 유니버스 폴백."""
+    try:
+        r = requests.get("https://query1.finance.yahoo.com/v1/finance/screener/"
+                         "predefined/saved",
+                         params={"scrIds": "day_gainers", "count": 100},
+                         headers=UA, timeout=15)
+        qs = r.json()["finance"]["result"][0].get("quotes") or []
+    except Exception:
+        return []
+    from movers import US_UNIV
+    manual = {s: (k, sec) for s, k, sec in US_UNIV}
+    out = []
+    for q in qs:
+        pct, px = q.get("regularMarketChangePercent"), q.get("regularMarketPrice")
+        vol = q.get("regularMarketVolume") or 0
+        sym = (q.get("symbol") or "").strip()
+        if pct is None or not px or not sym:
+            continue
+        dvol = px * vol / 1e9
+        if px < 1 or dvol < 0.005:
+            continue
+        kr, sec = manual.get(sym, ((q.get("shortName") or sym).strip()[:20], ""))
+        out.append({"sym": sym, "name": kr, "sec": sec,
+                    "chg": round(pct, 2), "dvol": round(dvol, 2), "last": None})
+    out.sort(key=lambda x: -x["chg"])
+    return out[:top]
+
+
 def _yahoo_news(sym: str, hours: int = 22) -> str:
     """야후 종목 뉴스 — 최근 세션 창 안의 첫 기사 제목(영어). 없으면 ''."""
     try:
@@ -169,9 +201,14 @@ def collect(now=None) -> dict | None:
     top = sorted(rows, key=lambda r: -r["dvol"])[:10]
     gain = [r for r in rows if r["dvol"] >= GAIN_MIN_B and r["chg"] > 0]
     gain = sorted(gain, key=lambda r: -r["chg"])[:10]
-    # 대금 무관 상승률 top10 — 국내 상한가 섹션의 미국판 (10-16 사용자)
-    gain_all = sorted([r for r in rows if r["chg"] > 0],
-                      key=lambda r: -r["chg"])[:10]
+    # 전체 시장 급등주 top10 — 국내 상한가의 미국판. 스크리너 실패 시
+    # 유니버스 내 상승률로 폴백 (10-16 사용자)
+    gain_all = _day_gainers(10)
+    all_title = "급등주 상위 10 (전체 시장)"
+    if not gain_all:
+        gain_all = sorted([r for r in rows if r["chg"] > 0],
+                          key=lambda r: -r["chg"])[:10]
+        all_title = "상승률 상위 10 (유니버스 — 스크리너 폴백)"
     for r in top + gain + gain_all:
         if "issue" not in r:
             r["issue"] = _reason(r["sym"], r["name"], now)
@@ -209,7 +246,7 @@ def collect(now=None) -> dict | None:
                {"title": "달러 거래대금 상위 10", "rows": pack(top)},
                {"title": f"상승률 상위 10 (거래대금 ${GAIN_MIN_B:.0f}B↑)",
                 "rows": pack(gain)},
-               {"title": "상승률 상위 10 (전체)", "rows": pack(gain_all)}]}
+               {"title": all_title, "rows": pack(gain_all)}]}
     hist = []
     try:
         hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]
