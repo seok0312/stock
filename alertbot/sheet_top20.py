@@ -178,6 +178,15 @@ def _market_summary():
     return out
 
 
+def _slot_of(hour: int, minute: int) -> str:
+    """수집 시각 → 슬롯 버킷. 14:30/19:00/20:00 크론 ± 수동 실행 흡수."""
+    if hour < 17:
+        return "14:30"
+    if (hour, minute) < (19, 40):
+        return "19:00"
+    return "20:00"
+
+
 def collect(now=None) -> dict | None:
     now = now or datetime.now(KST)
     today = now.strftime("%Y%m%d")
@@ -272,16 +281,20 @@ def collect(now=None) -> dict | None:
     ]}
     # 슬롯 스냅샷 (10-16 사용자: 14:30/19/20 버전을 지우지 않고 적층) —
     # 같은 날 같은 슬롯만 교체, 다른 슬롯은 보존
-    slot = ("14:30" if now.hour < 17 else "19:00" if (now.hour, now.minute) < (19, 40)
-            else "20:00")
+    slot = _slot_of(now.hour, now.minute)
     rec["slot"] = slot
     hist = []
     try:
         hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]
     except FileNotFoundError:
         pass
-    for h in hist:                         # 구형 레코드 슬롯 소급
-        h.setdefault("slot", "20:00")
+    for h in hist:                         # 구형 레코드 슬롯 소급 — asof 시각 역산
+        if "slot" not in h:
+            try:
+                hh, mm = map(int, h["asof"].split()[1].split(":"))
+                h["slot"] = _slot_of(hh, mm)
+            except Exception:
+                h["slot"] = "20:00"
     hist = [h for h in hist if not (h["date"] == today and h["slot"] == slot)] + [rec]
     os.makedirs(DATA, exist_ok=True)
     with open(STORE, "w", encoding="utf-8") as f:
@@ -402,7 +415,12 @@ def push_all() -> int:
         for l in open(STORE, encoding="utf-8"):
             h = json.loads(l)
             if h.get("v") == 2:
-                h.setdefault("slot", "20:00")
+                if "slot" not in h:
+                    try:
+                        hh, mm = map(int, h["asof"].split()[1].split(":"))
+                        h["slot"] = _slot_of(hh, mm)
+                    except Exception:
+                        h["slot"] = "20:00"
                 kr_hist.setdefault(h["date"], {})[h["slot"]] = h
     except FileNotFoundError:
         pass
