@@ -259,12 +259,31 @@ def push_all() -> int:
             continue
         d = datetime.strptime(rec["date"], "%Y%m%d")
         d_lab = f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
+        # 범용 렌더러 페이로드(10-16): 표 정의(헤더·서식·열너비)를 서버가 보내므로
+        # 앞으로 레이아웃 변경은 여기서만 — Apps Script 재배포 불필요.
+        blocks = []
+        if rec.get("market"):
+            blocks.append({
+                "title": "시장",
+                "headers": ["", "지수", "등락률", "거래대금(조)",
+                            "개인(억)", "외국인(억)", "기관(억)"],
+                "rows": [[m[0], m[1], (m[2] / 100 if m[2] is not None else None),
+                          m[3], m[4], m[5], m[6]] for m in rec["market"]],
+                "fmts": {"2": "#,##0.00", "3": "0.0%", "4": "0.00",
+                         "5": "+#,##0;-#,##0;0", "6": "+#,##0;-#,##0;0",
+                         "7": "+#,##0;-#,##0;0"},
+                "boldCol": 1})
+        for s in rec["sections"]:
+            blocks.append({
+                "title": s["title"],
+                "headers": ["종목", "시장", "거래대금(억)", "등락률", "이유"],
+                "rows": [[r["name"], r["mkt"], r["amt_eok"], r["chg"] / 100,
+                          r["issue"]] for r in s["rows"]],
+                "fmts": {"3": "#,##0", "4": "0.0%"}})
         payload = {"token": token, "date": d_lab, "asof": rec.get("asof"),
-                   "market": rec.get("market") or [],
-                   "sections": [{"title": s["title"],
-                                 "rows": [[r["name"], r["mkt"], r["amt_eok"],
-                                           r["chg"], r["issue"]] for r in s["rows"]]}
-                                for s in rec["sections"]]}
+                   "widths": {"1": 150, "2": 80, "3": 100, "4": 90,
+                              "5": 430, "6": 90, "7": 90},
+                   "blocks": blocks}
         try:
             resp = requests.post(url, json=payload, timeout=40, allow_redirects=True)
             ok = resp.status_code == 200 and "ok" in resp.text[:50].lower()
