@@ -163,6 +163,21 @@ class KiwoomClient:
             raise KiwoomError(f"{api_id} 응답 파싱 실패 (status {r.status_code}): {r.text[:200]}")
         rc = data.get("return_code")
         if rc not in (0, "0", None):
+            msg = str(data.get("return_msg") or "")
+            # 토큰 무효(8005) — 키움은 같은 앱키로 새 토큰이 발급되면 기존 토큰이
+            # 죽는다(동시 크론 경쟁). 한 번 재발급 후 재시도 (10-16 장애).
+            if "8005" in msg or "Token" in msg or "토큰" in msg:
+                self.issue_token()
+                headers["authorization"] = f"Bearer {self.token}"
+                r = requests.post(f"{self.base}{endpoint}", headers=headers,
+                                  json=params or {}, timeout=self.timeout)
+                try:
+                    data = r.json()
+                except ValueError:
+                    raise KiwoomError(f"{api_id} 재시도 파싱 실패: {r.text[:200]}")
+                rc = data.get("return_code")
+                if rc in (0, "0", None):
+                    return data, r.headers
             raise KiwoomError(f"{api_id} 오류 [{rc}] {data.get('return_msg')}")
         return data, r.headers
 
