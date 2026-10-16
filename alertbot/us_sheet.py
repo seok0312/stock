@@ -204,8 +204,8 @@ def collect(now=None) -> dict | None:
                  "issue": r.get("issue") or ""} for r in rs]
     rec = {"date": today, "asof": f"{now:%m/%d %H:%M} · 미국 {sess} 세션",
            "market": market, "sections": [
-               {"title": "달러 거래대금 상위 10", "rows": pack(top)},
-               {"title": "상승률 상위 10", "rows": pack(gain)}]}
+               {"title": "거래대금 TOP 10", "rows": pack(top)},
+               {"title": "상승률 TOP 10", "rows": pack(gain)}]}
     hist = []
     try:
         hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]

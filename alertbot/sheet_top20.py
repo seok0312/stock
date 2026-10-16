@@ -204,8 +204,11 @@ def collect(now=None) -> dict | None:
         smap = {}
     amt_rows, up_rows = _kiwoom_fetch()
     top = sorted(amt_rows.values(), key=lambda r: -r["amt_eok"])[:TOP_N]
-    gain = [r for r in up_rows if (r["amt_eok"] or 0) >= 1000 and r["chg"] > 0]
-    gain = sorted(gain, key=lambda r: -r["chg"])[:10]
+    # 상승률 표 모집단 = 거래대금 상위 50 (10-16 사용자: 1,000억 하드코딩 대신
+    # 상대 기준 — 한산한 날에도 활황인 날에도 같은 의미)
+    top50 = sorted(amt_rows.values(), key=lambda r: -r["amt_eok"])[:50]
+    gain = sorted([r for r in top50 if r["chg"] > 0],
+                  key=lambda r: -r["chg"])[:10]
     lim = sorted([r for r in up_rows if r["chg"] >= 29.5],
                  key=lambda r: -(r["amt_eok"] or 0))
     n_start = now.replace(hour=0, minute=0)
@@ -263,8 +266,8 @@ def collect(now=None) -> dict | None:
                  "flow": r.get("flow")} for r in rs]
     rec = {"date": today, "asof": now.strftime("%m/%d %H:%M"), "v": 2,
            "market": _market_summary(), "sections": [
-        {"title": f"거래대금 상위 {TOP_N}", "rows": pack(top)},
-        {"title": "상승률 상위 10 (거래대금 1,000억↑)", "rows": pack(gain)},
+        {"title": f"거래대금 TOP {TOP_N}", "rows": pack(top)},
+        {"title": "상승률 TOP 10 (거래대금 상위 50위)", "rows": pack(gain)},
         {"title": "상한가", "rows": pack(lim)},
     ]}
     hist = []
