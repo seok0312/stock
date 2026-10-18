@@ -182,7 +182,9 @@ def _market_summary():
 
 
 def _slot_of(hour: int, minute: int) -> str:
-    """수집 시각 → 슬롯 버킷. 14:30/19:00/20:00 크론 ± 수동 실행 흡수."""
+    """수집 시각 → 슬롯 버킷. 09:10/14:30/19:00/20:00 크론 ± 수동 실행 흡수."""
+    if hour < 12:
+        return "09:10"        # 장 초반 (10-19 사용자)
     if hour < 17:
         return "14:30"
     if (hour, minute) < (19, 40):
