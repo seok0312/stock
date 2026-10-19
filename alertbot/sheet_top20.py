@@ -550,6 +550,21 @@ def _stock_blocks(secs, us_mode, r0, with_flow=False):
             rws = [[x["name"], x["mkt"], x.get("sec") or "", x["chg"] / 100,
                     x["amt_eok"], x["issue"], _lnk(x)] for x in s["rows"]]
             fm = {"4": PCT, "5": "#,##0"}
+        # 합계 행 (10-19 사용자: 거래대금·개인/외인/기관 합산)
+        if rws:
+            if us_mode:
+                tot = ["합계", "", "", "", round(sum(x["dvol"] or 0
+                                                    for x in s["rows"]), 1), "", ""]
+            elif with_flow:
+                tot = ["합계", "", "", "",
+                       sum(x["amt_eok"] or 0 for x in s["rows"]), "", "",
+                       sum((x.get("flow") or {}).get("p") or 0 for x in s["rows"]),
+                       sum((x.get("flow") or {}).get("f") or 0 for x in s["rows"]),
+                       sum((x.get("flow") or {}).get("i") or 0 for x in s["rows"])]
+            else:
+                tot = ["합계", "", "", "",
+                       sum(x["amt_eok"] or 0 for x in s["rows"]), "", ""]
+            rws = rws + [tot]
         blocks.append({"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
                        "col": 9, "row": r, "headers": hd, "rows": rws,
                        "fmts": fm,
