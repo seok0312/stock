@@ -578,7 +578,8 @@ def _stock_blocks(secs, us_mode, r0, with_flow=False, prev_secs=None):
         blk = {"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
                "col": 9, "row": r, "headers": hd, "rows": rws,
                "fmts": fm,
-               "align": {"1": "center", "2": "center", "3": "center"}}
+               "align": {"1": "center", "2": "center", "3": "center",
+                         "7": "left"}}   # 링크 열 명시 왼쪽(10-19 — 잔존 서식 덮기)
         # 대금(0)·상승률(1) 표만 순위 변동 색칠 — 상한가·주간 제외
         if prev_secs is not None and si < 2 and si < len(prev_secs):
             bg1 = _rank_bg(s["rows"], (prev_secs[si] or {}).get("rows"))
