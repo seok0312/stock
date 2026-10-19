@@ -149,6 +149,20 @@ def _yahoo_news(sym: str, hours: int = 22) -> str:
     return "", ""
 
 
+def _tr_ko(text: str) -> str:
+    """영어 제목 → 한글 (구글 무키 번역 gtx, 10-19 사용자). 실패·한글이면 원문."""
+    if not text or any("가" <= ch <= "힣" for ch in text):
+        return text
+    try:
+        r = requests.get("https://translate.googleapis.com/translate_a/single",
+                         params={"client": "gtx", "sl": "en", "tl": "ko",
+                                 "dt": "t", "q": text}, headers=UA, timeout=10)
+        out = "".join(seg[0] for seg in r.json()[0] if seg and seg[0]).strip()
+        return out[:90] if out else text
+    except Exception:
+        return text
+
+
 def _reason(sym: str, kr: str, now) -> str:
     try:
         import news
@@ -163,7 +177,8 @@ def _reason(sym: str, kr: str, now) -> str:
                 return h["title"][:90], h.get("url") or ""
     except Exception:
         pass
-    return _yahoo_news(sym)
+    t, u = _yahoo_news(sym)
+    return _tr_ko(t), u
 
 
 def collect(now=None) -> dict | None:
