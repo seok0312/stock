@@ -207,7 +207,7 @@ def digest(now=None, dry_run=False) -> bool:
     now = now or datetime.now(KST)
     cal = _load(CAL, {})
     items = []
-    for d in (cal.get("days") or [])[:3]:
+    for d in (cal.get("days") or []):
         for it in d.get("items") or []:
             if not it.get("sss"):
                 continue
@@ -223,7 +223,8 @@ def digest(now=None, dry_run=False) -> bool:
     notify.load_env(os.path.join(HERE, ".env"),
                     os.path.abspath(os.path.join(HERE, "..", ".env")))
     esc = notify.esc
-    up = [(w, it) for w, it in items if now < w <= now + timedelta(hours=24)]
+    up = [(w, it) for w, it in items
+          if now < w <= now + timedelta(days=7)]      # 향후 1주 (10-19 사용자)
     L = []
     if now.hour >= 12:                     # 20시 판: 오늘 완료분 정리 포함
         done = [(w, it) for w, it in items
@@ -233,17 +234,18 @@ def digest(now=None, dry_run=False) -> bool:
             L += [f"  · {w:%H:%M} {esc(it['name'])}"
                   + (f" — {esc(it['val'])}" if it.get("val") else "")
                   for w, it in done]
-    head = "<b>발표예정</b>" + (" (24시간)" if L else "")
     if up:
         if L:
             L.append("")
-        L.append(head)
+        L.append("<b>발표예정 (1주)</b>")
+        WD = "월화수목금토일"
         for w, it in up:
-            day = "오늘" if w.date() == now.date() else "내일"
+            day = ("오늘" if w.date() == now.date() else
+                   f"{w.month}/{w.day:02d}({WD[w.weekday()]})")
             L.append(f"  · {day} {w:%H:%M} {esc(it['name'])}"
                      + (f" — {esc(it['val'])}" if it.get("val") else ""))
     if not L:
-        L = ["향후 24시간 SSS 일정 없음"]
+        L = ["향후 1주 SSS 일정 없음"]
     title = "🌅 <b>일정 브리핑</b>" if now.hour < 12 else "🌙 <b>일정 브리핑</b>"
     msg = f"{title} ({now:%m/%d %H:%M})\n" + "\n".join(L)
     return notify.send(msg, dry_run=dry_run, allow_muted=True)
