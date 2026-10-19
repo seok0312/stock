@@ -161,6 +161,10 @@ def _market_summary():
     import flows
     try:
         fl = flows.fetch_all()
+        try:
+            flows.apply_kiwoom(fl)      # KRX+NXT 통합 (10-19: 네이버는 KRX 단독이라
+        except Exception:               # 외인 등 수급이 크게 어긋남 — 브리핑과 동일 소스)
+            pass
         by = {r["code"]: r for r in fl.get("rows") or []}
     except Exception:
         by = {}
