@@ -518,7 +518,7 @@ PCT = "[Red]+0.0%;[Blue]-0.0%;0.0%"
 NET = "+#,##0;-#,##0;0"
 WIDTHS = {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85, "6": 85, "7": 85,
           "8": 30, "9": 140, "10": 75, "11": 110, "12": 90, "13": 100,
-          "14": 430, "15": 50, "16": 85, "17": 85, "18": 85}
+          "14": 430, "15": 230, "16": 85, "17": 85, "18": 85}
 
 
 def _stock_blocks(secs, us_mode, r0, with_flow=False):
@@ -528,8 +528,9 @@ def _stock_blocks(secs, us_mode, r0, with_flow=False):
     blocks, r = [], r0
     for s in secs:
         def _lnk(x):
-            u = (x.get("issue_url") or "").replace('"', "%22")
-            return f'=HYPERLINK("{u}","🔗")' if u else ""
+            # URL 원문 그대로 (10-19 사용자: 아이콘 대신 주소 노출) — 시트가
+            # 자동으로 링크화한다.
+            return x.get("issue_url") or ""
         if us_mode:
             hd = ["종목", "시장", "섹터", "등락률", "거래대금($B)", "이유", "링크"]
             rws = [[x["name"], "미국", x["sec"], x["chg"] / 100, x["dvol"],
