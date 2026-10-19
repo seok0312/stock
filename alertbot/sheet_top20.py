@@ -518,7 +518,7 @@ PCT = "[Red]+0.0%;[Blue]-0.0%;0.0%"
 NET = "+#,##0;-#,##0;0"
 WIDTHS = {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85, "6": 85, "7": 85,
           "8": 30, "9": 140, "10": 75, "11": 110, "12": 90, "13": 100,
-          "14": 430, "15": 230, "16": 85, "17": 85, "18": 85}
+          "14": 430, "15": 430, "16": 85, "17": 85, "18": 85}
 
 
 RANK_UP_BG = "#f8d0cd"     # 순위 상승·신규 진입 (연빨강)
@@ -574,8 +574,7 @@ def _stock_blocks(secs, us_mode, r0, with_flow=False, prev_secs=None):
         blk = {"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
                "col": 9, "row": r, "headers": hd, "rows": rws,
                "fmts": fm,
-               "align": {"1": "center", "2": "center", "3": "center",
-                         "7": "center"}}
+               "align": {"1": "center", "2": "center", "3": "center"}}
         # 대금(0)·상승률(1) 표만 순위 변동 색칠 — 상한가·주간 제외
         if prev_secs is not None and si < 2 and si < len(prev_secs):
             bg1 = _rank_bg(s["rows"], (prev_secs[si] or {}).get("rows"))
