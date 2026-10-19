@@ -521,12 +521,33 @@ WIDTHS = {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85, "6": 85, "7": 85,
           "14": 430, "15": 230, "16": 85, "17": 85, "18": 85}
 
 
-def _stock_blocks(secs, us_mode, r0, with_flow=False):
+RANK_UP_BG = "#f8d0cd"     # 순위 상승·신규 진입 (연빨강)
+RANK_DN_BG = "#cfe0f7"     # 순위 하락 (연파랑)
+
+
+def _rank_bg(rows, prev_rows):
+    """이전 판 대비 순위 변동 → 종목 칸 배경색 리스트 (10-19 사용자)."""
+    def key(x):
+        return x.get("code") or x.get("name")
+    prev = {key(x): i for i, x in enumerate(prev_rows or [])}
+    out = []
+    for i, x in enumerate(rows):
+        p = prev.get(key(x))
+        if p is None or p > i:
+            out.append(RANK_UP_BG)          # 신규 진입 또는 순위 상승
+        elif p < i:
+            out.append(RANK_DN_BG)
+        else:
+            out.append(None)
+    return out if any(out) else None
+
+
+def _stock_blocks(secs, us_mode, r0, with_flow=False, prev_secs=None):
     """종목 표들(col 9) — (blocks, 끝다음행).
     with_flow: 주간 서머리만 True — 일일 표의 종목별 수급 열은 삭제(10-17),
     주간 '한 주간 수급'은 사용자 명시 요구라 유지."""
     blocks, r = [], r0
-    for s in secs:
+    for si, s in enumerate(secs):
         def _lnk(x):
             # URL 원문 그대로 (10-19 사용자: 아이콘 대신 주소 노출) — 시트가
             # 자동으로 링크화한다.
@@ -550,11 +571,17 @@ def _stock_blocks(secs, us_mode, r0, with_flow=False):
             rws = [[x["name"], x["mkt"], x.get("sec") or "", x["chg"] / 100,
                     x["amt_eok"], x["issue"], _lnk(x)] for x in s["rows"]]
             fm = {"4": PCT, "5": "#,##0"}
-        blocks.append({"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
-                       "col": 9, "row": r, "headers": hd, "rows": rws,
-                       "fmts": fm,
-                       "align": {"1": "center", "2": "center", "3": "center",
-                                 "7": "center"}})
+        blk = {"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
+               "col": 9, "row": r, "headers": hd, "rows": rws,
+               "fmts": fm,
+               "align": {"1": "center", "2": "center", "3": "center",
+                         "7": "center"}}
+        # 대금(0)·상승률(1) 표만 순위 변동 색칠 — 상한가·주간 제외
+        if prev_secs is not None and si < 2 and si < len(prev_secs):
+            bg1 = _rank_bg(s["rows"], (prev_secs[si] or {}).get("rows"))
+            if bg1:
+                blk["bg1"] = bg1
+        blocks.append(blk)
         r += 2 + max(len(rws), 1) + 1
     return blocks, r
 
@@ -564,8 +591,8 @@ def _date_lab(date: str) -> str:
     return f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
 
 
-def _us_zone(us):
-    """미국 존 — 1행부터. (blocks, 높이)."""
+def _us_zone(us, prev=None):
+    """미국 존 — 1행부터. (blocks, 높이). prev=전일 레코드(순위 색칠용)."""
     mk = [[m[0], m[1], (m[2] / 100 if m[2] is not None else None), m[3]]
           for m in us.get("market") or []]
     blocks = [{"title": f"🇺🇸 {_date_lab(us['date'])} 시장 ({us.get('asof', '')})",
@@ -574,14 +601,15 @@ def _us_zone(us):
                "fmts": {"2": "#,##0.00", "3": PCT, "4": "0.0"},
                "boldCol": 1, "align": {"1": "center"}}]
     left_end = 1 + 2 + max(len(mk), 1)
-    sb, right_end = _stock_blocks(us["sections"], True, 1)
+    sb, right_end = _stock_blocks(us["sections"], True, 1,
+                                  prev_secs=(prev or {}).get("sections"))
     end = max(left_end, right_end - 1)
     blocks += sb
     blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 18], "bg": "#000000"})
     return blocks, end + 2
 
 
-def _kr_zone(kr):
+def _kr_zone(kr, prev=None):
     """국내 존 — 내용 먼저, 맨 아래 검은 띠(아래 존과 분리). 1행 기준 상대 블록.
     모든 존이 맨 위(1행) 삽입이라 시간순으로 위에 쌓인다 (10-16 사용자:
     아래부터 US→14:30→19→20)."""
@@ -604,8 +632,10 @@ def _kr_zone(kr):
                         "5": NET, "6": NET, "7": NET},
                "boldCol": 1, "align": {"1": "center"}}]
     left_end = 1 + 2 + max(len(mk), 1)
-    sb, right_end = _stock_blocks(kr["sections"], False, 1,
-                                  with_flow=True)   # 10-17 복원(일일도 수급 표시)
+    sb, right_end = _stock_blocks(
+        kr["sections"], False, 1, with_flow=True,   # 10-17 복원(일일도 수급 표시)
+        prev_secs=None if kr.get("slot") == "week"
+        else (prev or {}).get("sections"))
     end = max(left_end, right_end - 1)
     blocks += sb
     blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 17], "bg": "#000000"})
@@ -692,9 +722,26 @@ def push_all() -> int:
         st = st or {"us": False, "slots": []}
         d = datetime.strptime(date, "%Y%m%d")
         d_lab = f"{d.month}월"            # 월 단위 탭 (10-16 사용자)
+        dates_sorted = sorted(set(us_hist) | set(kr_hist))
+
+        def _prev_kr(cur_date, cur_slot):
+            """같은 날 직전 슬롯 → 없으면 전 거래일 마지막 슬롯."""
+            slots = kr_hist.get(cur_date, {})
+            earlier = [s for s in slots if s < cur_slot and s != "week"]
+            if earlier:
+                return slots[max(earlier)]
+            for d2 in reversed([x for x in dates_sorted if x < cur_date]):
+                s2 = {k: v for k, v in kr_hist.get(d2, {}).items() if k != "week"}
+                if s2:
+                    return s2[max(s2)]
+            return None
+
         us = us_hist.get(date)
         if us and not st["us"]:
-            blocks, h = _us_zone(us)
+            prev_us = next((us_hist[d2] for d2 in
+                            reversed([x for x in dates_sorted
+                                      if x < date and x in us_hist])), None)
+            blocks, h = _us_zone(us, prev_us)
             got = _post({"token": token, "date": d_lab, "mode": "insert_or_create",
                          "at": 1, "n": h + 1, "widths": WIDTHS, "blocks": blocks})
             if got:
@@ -722,7 +769,8 @@ def push_all() -> int:
             if slot in st["slots"]:
                 continue
             kr = kr_hist[date][slot]
-            zb, h = _kr_zone(kr)
+            zb, h = _kr_zone(kr, None if slot == "week"
+                             else {"sections": (_prev_kr(date, slot) or {}).get("sections")})
             got = _post({"token": token, "date": d_lab, "mode": "insert_or_create",
                          "at": 1, "n": h, "widths": WIDTHS, "blocks": zb})
             if got:
