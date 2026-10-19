@@ -550,21 +550,6 @@ def _stock_blocks(secs, us_mode, r0, with_flow=False):
             rws = [[x["name"], x["mkt"], x.get("sec") or "", x["chg"] / 100,
                     x["amt_eok"], x["issue"], _lnk(x)] for x in s["rows"]]
             fm = {"4": PCT, "5": "#,##0"}
-        # 합계 행 (10-19 사용자: 거래대금·개인/외인/기관 합산)
-        if rws:
-            if us_mode:
-                tot = ["합계", "", "", "", round(sum(x["dvol"] or 0
-                                                    for x in s["rows"]), 1), "", ""]
-            elif with_flow:
-                tot = ["합계", "", "", "",
-                       sum(x["amt_eok"] or 0 for x in s["rows"]), "", "",
-                       sum((x.get("flow") or {}).get("p") or 0 for x in s["rows"]),
-                       sum((x.get("flow") or {}).get("f") or 0 for x in s["rows"]),
-                       sum((x.get("flow") or {}).get("i") or 0 for x in s["rows"])]
-            else:
-                tot = ["합계", "", "", "",
-                       sum(x["amt_eok"] or 0 for x in s["rows"]), "", ""]
-            rws = rws + [tot]
         blocks.append({"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
                        "col": 9, "row": r, "headers": hd, "rows": rws,
                        "fmts": fm,
@@ -602,6 +587,12 @@ def _kr_zone(kr):
     아래부터 US→14:30→19→20)."""
     mk = [[m[0], m[1], (m[2] / 100 if m[2] is not None else None),
            m[3], m[4], m[5], m[6]] for m in kr.get("market") or []]
+    if mk:   # 시장 전체 합계 (10-19 사용자): 대금·개인/외인/기관 — 코스피+코스닥+선물
+        mk = mk + [["합계", "", "",
+                    round(sum(r[3] or 0 for r in mk), 1),
+                    sum(r[4] or 0 for r in mk),
+                    sum(r[5] or 0 for r in mk),
+                    sum(r[6] or 0 for r in mk)]]
     head = (f"📅 주간 서머리 ({kr.get('week_label', '')})" if kr.get("slot") == "week"
             else f"🇰🇷 {_date_lab(kr['date'])} 시장 ({kr.get('asof', '')} · "
                  f"{kr.get('slot', '')} 판)")
