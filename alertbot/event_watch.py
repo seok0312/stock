@@ -140,24 +140,6 @@ def run(now=None, dry_run=False) -> int:
         if not it.get("sss"):
             continue
         key = f"{today}|{it['t']}|{it['name']}"
-        # 발표예정 예고 — 시작 35분 전 1회 (10-17 사용자: 예정/완료만 살림)
-        pre_key = "pre|" + key
-        if pre_key not in state:
-            try:
-                hh, mm = it["t"].split(":")
-                when_pre = now.replace(hour=int(hh), minute=int(mm), second=0,
-                                       microsecond=0)
-                lead = (when_pre - now).total_seconds() / 60
-                if 0 < lead <= 35:
-                    val = f"\n{esc(it['val'])}" if it.get("val") else ""
-                    notify.send(f"📣 <b>발표예정</b> ({it['t']})\n"
-                                f"{esc(it['name'])}{val}",
-                                dry_run=dry_run, allow_muted=True)
-                    state[pre_key] = now.isoformat(timespec="seconds")
-                    n_sent += 1
-                    print(f"[watch] 예고: {it['name']} ({it['t']})")
-            except Exception:
-                pass
         if key in state:
             continue
         try:
@@ -219,10 +201,61 @@ def run(now=None, dry_run=False) -> int:
     return n_sent
 
 
+def digest(now=None, dry_run=False) -> bool:
+    """일정 다이제스트 — 매일 06:00(오늘 예정)·20:00(완료+야간/내일 예정).
+    10-19 사용자: "06시/20시 두 번 + 중간 발표는 실시간(발표완료)만"."""
+    now = now or datetime.now(KST)
+    cal = _load(CAL, {})
+    items = []
+    for d in (cal.get("days") or [])[:3]:
+        for it in d.get("items") or []:
+            if not it.get("sss"):
+                continue
+            try:
+                hh, mm = it["t"].split(":")
+                when = datetime.strptime(d["date"], "%Y%m%d").replace(
+                    hour=int(hh), minute=int(mm), tzinfo=KST)
+            except Exception:
+                continue
+            items.append((when, it))
+    items.sort(key=lambda x: x[0])
+    import notify
+    notify.load_env(os.path.join(HERE, ".env"),
+                    os.path.abspath(os.path.join(HERE, "..", ".env")))
+    esc = notify.esc
+    up = [(w, it) for w, it in items if now < w <= now + timedelta(hours=24)]
+    L = []
+    if now.hour >= 12:                     # 20시 판: 오늘 완료분 정리 포함
+        done = [(w, it) for w, it in items
+                if w <= now and w >= now.replace(hour=0, minute=0)]
+        if done:
+            L.append("<b>오늘 발표완료</b>")
+            L += [f"  · {w:%H:%M} {esc(it['name'])}"
+                  + (f" — {esc(it['val'])}" if it.get("val") else "")
+                  for w, it in done]
+    head = "<b>발표예정</b>" + (" (24시간)" if L else "")
+    if up:
+        if L:
+            L.append("")
+        L.append(head)
+        for w, it in up:
+            day = "오늘" if w.date() == now.date() else "내일"
+            L.append(f"  · {day} {w:%H:%M} {esc(it['name'])}"
+                     + (f" — {esc(it['val'])}" if it.get("val") else ""))
+    if not L:
+        L = ["향후 24시간 SSS 일정 없음"]
+    title = "🌅 <b>일정 브리핑</b>" if now.hour < 12 else "🌙 <b>일정 브리핑</b>"
+    msg = f"{title} ({now:%m/%d %H:%M})\n" + "\n".join(L)
+    return notify.send(msg, dry_run=dry_run, allow_muted=True)
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.path.insert(0, HERE)
     dry = "--dry-run" in sys.argv
-    n = run(dry_run=dry)
-    if n == 0:
-        print("[watch] 새 전환 없음")
+    if "--digest" in sys.argv:
+        print("[digest] 발송:", digest(dry_run=dry))
+    else:
+        n = run(dry_run=dry)
+        if n == 0:
+            print("[watch] 새 전환 없음")
