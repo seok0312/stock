@@ -13,6 +13,7 @@ dongbin300/KiwoomRestApi.Net) 소스로 교차확인함(2026-07).
 from __future__ import annotations
 
 import os
+import time
 
 import pandas as pd
 import requests
@@ -156,11 +157,7 @@ class KiwoomClient:
             "cont-yn": cont_yn,
             "next-key": next_key,
         }
-        r = requests.post(f"{self.base}{endpoint}", headers=headers, json=params or {}, timeout=self.timeout)
-        try:
-            data = r.json()
-        except ValueError:
-            raise KiwoomError(f"{api_id} 응답 파싱 실패 (status {r.status_code}): {r.text[:200]}")
+        data, resp_headers = self._post_json(api_id, endpoint, headers, params)
         rc = data.get("return_code")
         if rc not in (0, "0", None):
             msg = str(data.get("return_msg") or "")
@@ -169,17 +166,33 @@ class KiwoomClient:
             if "8005" in msg or "Token" in msg or "토큰" in msg:
                 self.issue_token()
                 headers["authorization"] = f"Bearer {self.token}"
-                r = requests.post(f"{self.base}{endpoint}", headers=headers,
-                                  json=params or {}, timeout=self.timeout)
-                try:
-                    data = r.json()
-                except ValueError:
-                    raise KiwoomError(f"{api_id} 재시도 파싱 실패: {r.text[:200]}")
+                data, resp_headers = self._post_json(api_id, endpoint, headers, params)
                 rc = data.get("return_code")
                 if rc in (0, "0", None):
-                    return data, r.headers
+                    return data, resp_headers
             raise KiwoomError(f"{api_id} 오류 [{rc}] {data.get('return_msg')}")
-        return data, r.headers
+        return data, resp_headers
+
+    def _post_json(self, api_id: str, endpoint: str, headers: dict, params: dict | None):
+        """POST 후 JSON 파싱. 일시 장애(네트워크 오류·5xx HTML)는 2·5초 간격 재시도 —
+        단발 크론 슬롯이 게이트웨이 502 한 번에 판을 통째로 거르지 않게 (10-20 09:10 장애)."""
+        last = ""
+        for wait in (0, 2, 5):
+            if wait:
+                time.sleep(wait)
+            try:
+                r = requests.post(f"{self.base}{endpoint}", headers=headers,
+                                  json=params or {}, timeout=self.timeout)
+            except requests.RequestException as e:
+                last = f"요청 실패: {e}"
+                continue
+            try:
+                return r.json(), r.headers
+            except ValueError:
+                last = f"응답 파싱 실패 (status {r.status_code}): {r.text[:200]}"
+                if r.status_code < 500:
+                    break  # 4xx는 재시도해도 같은 응답
+        raise KiwoomError(f"{api_id} {last}")
 
     # ---- ka00198 실시간종목조회순위 (빅데이터 관심도) ----
     def view_rank(self, qry_tp: str = "4") -> pd.DataFrame:
