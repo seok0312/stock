@@ -32,6 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
 STORE = os.path.join(DATA, "sheet_top20.jsonl")
 STATE = os.path.join(DATA, "sheet_push_state.json")
+BROKER_LOG = os.path.join(DATA, "broker_log.jsonl")   # 거래원 수급 원장 (10-20 사용자, 분석용)
 TOP_N = 15          # 10-17 사용자: 15로 확대
 EXCL_PAT = re.compile(r"KODEX|TIGER|ACE |PLUS |SOL |RISE |HANARO|KOSEF|KIWOOM |ARIRANG"
                       r"|1Q |스팩|ETN|레버리지|인버스")
@@ -185,6 +186,96 @@ def _market_summary():
     return out
 
 
+def _prev_trading_rec(hist, today: str):
+    """전 거래일 기준판 — 20:00 우선, 없으면 그 날 마지막 슬롯 (09:10 추적용)."""
+    days: dict = {}
+    for h in hist:
+        if h.get("v") == 2 and h.get("slot") not in (None, "week") \
+                and h.get("date", "") < today:
+            days.setdefault(h["date"], {})[h["slot"]] = h
+    if not days:
+        return None
+    slots = days[max(days)]
+    return slots.get("20:00") or slots[max(slots)]
+
+
+def _build_track(base: dict, now, kc):
+    """전일 대금·상승률 TOP 합집합 → 현재 등락률순 추적 리스트 + 거래원 원장
+    (10-20 사용자: ① 상승/하락 빨·파 채우기 ② 상승률순 리스트 ③ 거래원별 수급
+    기록 — 분석용). 등락률·거래원은 ka10002 한 콜, 키움 실패 시 네이버 폴백."""
+    today = now.strftime("%Y%m%d")
+    rows, seen = [], {}
+    for si, s in enumerate((base.get("sections") or [])[:2]):
+        tag = "대금" if si == 0 else "상승률"
+        for x in s.get("rows") or []:
+            code = x.get("code")
+            if not code:
+                continue
+            if code in seen:
+                seen[code]["src"] += "·" + tag
+                continue
+            r = {"code": code, "name": x["name"], "mkt": x["mkt"],
+                 "sec": x.get("sec") or "", "src": tag, "chg": None,
+                 "amt_prev": x.get("amt_eok"), "chg_prev": x.get("chg"),
+                 "issue": x.get("issue") or "", "issue_url": x.get("issue_url") or "",
+                 "flow": x.get("flow")}
+            seen[code] = r
+            rows.append(r)
+    logs = []
+    fails = 0
+    for r in rows:
+        d = None
+        # 연속 3회 실패 시 잔여 종목은 전부 네이버 폴백 — 부분 장애 날 재시도
+        # 백오프(종목당 최악 ~37초)가 아침 슬롯을 통째로 밀지 않게 (리뷰 10-20)
+        if kc is not None and fails < 3:
+            try:
+                d, _ = kc.request("ka10002", {"stk_cd": r["code"]},
+                                  endpoint="/api/dostk/stkinfo")
+                r["chg"] = _num(d.get("flu_rt"))
+                fails = 0
+            except Exception:
+                d = None
+                fails += 1
+            time.sleep(0.2)
+        if r["chg"] is None:                 # 키움 실패 — 네이버 폴백(등락률만)
+            try:
+                b = requests.get(f"https://m.stock.naver.com/api/stock/{r['code']}/basic",
+                                 headers=NAVER_UA, timeout=10).json()
+                r["chg"] = _num(b.get("fluctuationsRatio"))
+            except Exception:
+                pass
+        if d:
+            logs.append({"date": today, "asof": now.strftime("%m/%d %H:%M"),
+                         "slot": "09:10", "base_date": base["date"],
+                         "code": r["code"], "name": r["name"], "src": r["src"],
+                         "chg": r["chg"],
+                         "prev": {"amt_eok": r["amt_prev"], "chg": r["chg_prev"],
+                                  "flow": r["flow"]},
+                         "brokers": {k: v for k, v in d.items()
+                                     if k.startswith(("sel_trde", "buy_trde"))
+                                     and v not in ("", None)}})
+    if logs:   # 원장은 무기한 적층 — (날짜,종목) 병합: 부분 성공 재실행이
+        old = []   # 앞서 기록된 행을 깎지 않는다 (리뷰 10-20)
+        try:
+            for l in open(BROKER_LOG, encoding="utf-8"):
+                try:
+                    old.append(json.loads(l))   # 찢긴 줄은 건너뛰고 복구(크래시 내성)
+                except ValueError:
+                    continue
+        except (FileNotFoundError, OSError):
+            pass
+        newk = {(x["date"], x["code"]) for x in logs}
+        old = [x for x in old if (x.get("date"), x.get("code")) not in newk]
+        tmp = BROKER_LOG + ".tmp"              # 원자 교체 — 쓰기 도중 사망에도 원본 보존
+        with open(tmp, "w", encoding="utf-8") as f:
+            for x in old + logs:
+                f.write(json.dumps(x, ensure_ascii=False) + "\n")
+        os.replace(tmp, BROKER_LOG)
+        print(f"[top20] 거래원 기록 {len(logs)}종목 → broker_log.jsonl")
+    rows.sort(key=lambda r: (r["chg"] is None, -(r["chg"] or 0)))
+    return {"base_date": base["date"], "base_slot": base.get("slot"), "rows": rows}
+
+
 def _slot_of(hour: int, minute: int) -> str:
     """수집 시각 → 슬롯 버킷. 09:10/14:30/19:00/20:00 크론 ± 수동 실행 흡수."""
     if hour < 12:
@@ -310,6 +401,15 @@ def collect(now=None) -> dict | None:
                 h["slot"] = _slot_of(hh, mm)
             except Exception:
                 h["slot"] = "20:00"
+    if slot == "09:10":                    # 전일 TOP 추적 (10-20 사용자)
+        base = _prev_trading_rec(hist, today)
+        if base:
+            try:
+                rec["track"] = _build_track(base, now, kc)
+                print(f"[top20] 전일({base['date']} {base.get('slot')}판) TOP 추적 "
+                      f"{len(rec['track']['rows'])}종목")
+            except Exception as e:
+                print(f"[top20] 전일 추적 실패(계속): {type(e).__name__}: {e}")
     hist = [h for h in hist if not (h["date"] == today and h["slot"] == slot)] + [rec]
     os.makedirs(DATA, exist_ok=True)
     with open(STORE, "w", encoding="utf-8") as f:
@@ -522,7 +622,7 @@ PCT = "[Red]+0.0%;[Blue]-0.0%;0.0%"
 NET = "+#,##0;-#,##0;0"
 WIDTHS = {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85, "6": 85, "7": 85,
           "8": 30, "9": 140, "10": 75, "11": 110, "12": 90, "13": 100,
-          "14": 430, "15": 430, "16": 85, "17": 85, "18": 85}
+          "14": 430, "15": 430, "16": 85, "17": 85, "18": 85, "19": 85}
 
 
 RANK_UP_BG = "#f8d0cd"     # 순위 상승·신규 진입 (연빨강)
@@ -595,6 +695,156 @@ def _date_lab(date: str) -> str:
     return f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
 
 
+def _analysis_rows(kr: dict, prev: dict | None):
+    """시장·종목 분석 (10-20 사용자: 왼쪽 빈칸 A8~G45) — 수집 데이터만으로 기계
+    생성, 추정·전망 없이 수치 요약과 쏠림 서술만. 행당 A열 한 칸(B~G 빈칸으로
+    넘쳐 보임), 최대 38행."""
+    secs = kr.get("sections") or []
+    mk = {m[0]: m for m in kr.get("market") or [] if m and m[0]}
+
+    def pct(v):
+        return f"{v:+.2f}%" if v is not None else "?"
+
+    def eok(v):
+        if v is None:
+            return "?"
+        return f"{v / 10000:,.1f}조" if abs(v) >= 10000 else f"{v:,.0f}억"
+
+    def sec_agg(rows):
+        agg: dict = {}
+        for x in rows:
+            s = (x.get("sec") or "").strip()
+            if s:
+                a = agg.setdefault(s, [0, 0.0])
+                a[0] += 1
+                a[1] += x.get("amt_eok") or 0
+        return sorted(agg.items(), key=lambda kv: -kv[1][1])
+
+    Lm: list = []
+    ks, kq, fut = mk.get("코스피"), mk.get("코스닥"), mk.get("선물")
+    if ks and kq:
+        c1, c2 = ks[2], kq[2]
+        tone = ("동반 상승" if (c1 or 0) > 0 and (c2 or 0) > 0 else
+                "동반 하락" if (c1 or 0) < 0 and (c2 or 0) < 0 else
+                "혼조 — 코스피 우위" if (c1 or 0) >= (c2 or 0) else "혼조 — 코스닥 우위")
+        fut_s = f" · 선물 {pct(fut[2])}" if fut and fut[2] is not None else ""
+        if c1 is not None or c2 is not None:
+            Lm.append(f"지수: 코스피 {pct(c1)} · 코스닥 {pct(c2)}{fut_s} — {tone}")
+        for m in (ks, kq):
+            p, f_, i = m[4], m[5], m[6]
+            if f_ is None and i is None:
+                continue
+            duo = ("외인·기관 동반 순매수" if (f_ or 0) > 0 and (i or 0) > 0 else
+                   "외인·기관 동반 순매도" if (f_ or 0) < 0 and (i or 0) < 0 else
+                   "외인 매수 vs 기관 매도" if (f_ or 0) > 0 else "외인 매도 vs 기관 매수")
+            pp = f"{p:+,.0f}억" if p is not None else "?"
+            ff = f"{f_:+,.0f}억" if f_ is not None else "?"
+            ii = f"{i:+,.0f}억" if i is not None else "?"
+            Lm.append(f"{m[0]} 수급: 개인 {pp} · 외인 {ff} · 기관 {ii} — {duo}")
+        amt = (ks[3] or 0) + (kq[3] or 0)
+        if amt:
+            cmp_s = ""
+            pmk = {m[0]: m for m in (prev or {}).get("market") or [] if m and m[0]}
+            pamt = ((pmk.get("코스피") or [None] * 4)[3] or 0) + \
+                   ((pmk.get("코스닥") or [None] * 4)[3] or 0)
+            if pamt and prev:
+                cmp_s = (f" (직전 {_date_lab(prev['date'])} {prev.get('slot', '')}판 "
+                         f"{pamt:.1f}조)" if prev.get("date") else "")
+            Lm.append(f"거래대금: 코스피+코스닥 {amt:.1f}조{cmp_s}")
+    tr = kr.get("track") or {}
+    if tr.get("rows"):
+        chgs = [x["chg"] for x in tr["rows"] if x.get("chg") is not None]
+        if chgs:
+            up = sum(1 for c in chgs if c > 0)
+            dn = sum(1 for c in chgs if c < 0)
+            Lm.append(f"전일 주도주 {len(chgs)}종목: 상승 {up} · 하락 {dn} · "
+                     f"평균 {sum(chgs) / len(chgs):+.1f}% — "
+                     + ("갭 지속 우세" if up > dn else "갭 소멸 우세" if dn > up else "팽팽"))
+
+    rows_amt = (secs[0].get("rows") if secs else []) or []
+    rows_up = (secs[1].get("rows") if len(secs) > 1 else []) or []
+    rows_lim = (secs[2].get("rows") if len(secs) > 2 else []) or []
+    Ls: list = []
+    ag = sec_agg(rows_amt)
+    if ag:
+        Ls.append("주도 섹터(대금 TOP15): " + " · ".join(
+            f"{s} {n}종목 {eok(a)}" for s, (n, a) in ag[:3]))
+    top_amt = sum(x.get("amt_eok") or 0 for x in rows_amt)
+    # 분모는 같은 소스(ka10032)의 상위 200 합 — 시장 전체 대금(flows)과는 산출
+    # 기준이 달라 섞으면 80%대 과대(10-20 실측: 상위200 합 > 시장 전체)
+    a200 = sum((r[3] or 0) for r in kr.get("amt100") or [])
+    if top_amt and a200:
+        share = top_amt / a200 * 100
+        Ls.append(f"대금 TOP{TOP_N} 합 {eok(top_amt)} = 대금 상위 200종목의 {share:.0f}%"
+                 + (" — 쏠림 강함" if share >= 70 else ""))
+    both_buy = sorted([x for x in rows_amt
+                       if ((x.get("flow") or {}).get("f") or 0) > 0
+                       and ((x.get("flow") or {}).get("i") or 0) > 0],
+                      key=lambda x: -((x["flow"]["f"] or 0) + (x["flow"]["i"] or 0)))
+    if both_buy:
+        Ls.append("외인·기관 동반 매수: " + " · ".join(
+            f"{x['name']}(+{(x['flow']['f'] or 0) + (x['flow']['i'] or 0):,.0f}억)"
+            for x in both_buy[:5]))
+    both_sell = sorted([x for x in rows_amt
+                        if ((x.get("flow") or {}).get("f") or 0) < 0
+                        and ((x.get("flow") or {}).get("i") or 0) < 0],
+                       key=lambda x: (x["flow"]["f"] or 0) + (x["flow"]["i"] or 0))
+    if both_sell:
+        Ls.append("외인·기관 동반 매도: " + " · ".join(
+            f"{x['name']}({(x['flow']['f'] or 0) + (x['flow']['i'] or 0):+,.0f}억)"
+            for x in both_sell[:5]))
+    agu = sec_agg(rows_up)
+    if agu:
+        Ls.append("상승률 TOP15 쏠림: " + " · ".join(
+            f"{s} {n}종목" for s, (n, _) in sorted(agu, key=lambda kv: -kv[1][0])[:3]))
+    if rows_lim:
+        Ls.append(f"상한가 {len(rows_lim)}종목: " + " · ".join(
+            x["name"] + (f"({(x.get('sec') or '').strip()})" if x.get("sec") else "")
+            for x in rows_lim[:6]) + (" 외" if len(rows_lim) > 6 else ""))
+    if prev and (prev.get("sections") or []):
+        pcodes = {x.get("code") for x in (prev["sections"][0].get("rows") or [])}
+        fresh = [x["name"] for x in rows_amt if x.get("code") not in pcodes]
+        if fresh:
+            Ls.append("대금 TOP15 신규 진입(직전 판 대비): " + " · ".join(fresh[:8]))
+    out = []                                  # 내용 있는 섹션만 머리글 포함
+    if Lm:
+        out += ["💡 시장 분석"] + Lm
+    if Ls:
+        out += ([""] if out else []) + ["💡 종목 분석"] + Ls
+    return out[:38] if out else None          # A8~G45 한도
+
+
+def _track_block(tr: dict, r0: int):
+    """09:10 전일 TOP 추적 표 — 현재 등락률순, 종목 칸 상승=연빨강/하락=연파랑
+    (10-20 사용자). 이유·수급은 전일판에서 그대로 끌어와 아침 복기용으로 병기."""
+    rws, bgs = [], []
+    for x in tr["rows"]:
+        chg = x.get("chg")
+        rws.append([x["name"], x["mkt"], x.get("sec") or "",
+                    (chg / 100 if chg is not None else None),
+                    x.get("amt_prev"), x.get("issue") or "",
+                    x.get("issue_url") or "",
+                    (x.get("chg_prev") / 100 if x.get("chg_prev") is not None else None),
+                    (x.get("flow") or {}).get("p"),
+                    (x.get("flow") or {}).get("f"),
+                    (x.get("flow") or {}).get("i")])
+        bgs.append(RANK_UP_BG if (chg or 0) > 0
+                   else RANK_DN_BG if (chg or 0) < 0 else None)
+    blk = {"title": (f"🔁 전일({_date_lab(tr['base_date'])} {tr.get('base_slot', '')}판) "
+                     f"대금·상승률 TOP{TOP_N} 추적 — 현재 등락률순"),
+           "col": 9, "row": r0,
+           "headers": ["종목", "시장", "섹터", "등락률", "전일 대금(억)", "전일 이유",
+                       "링크", "전일 등락률", "전일 개인(억)", "전일 외국인(억)",
+                       "전일 기관(억)"],
+           "rows": rws,
+           "fmts": {"4": PCT, "5": "#,##0", "8": PCT,
+                    "9": NET, "10": NET, "11": NET},
+           "align": {"1": "center", "2": "center", "3": "center", "7": "left"}}
+    if any(bgs):
+        blk["bg1"] = bgs
+    return blk, r0 + 2 + max(len(rws), 1) + 1
+
+
 def _us_zone(us, prev=None):
     """미국 존 — 1행부터. (blocks, 높이). prev=전일 레코드(순위 색칠용)."""
     mk = [[m[0], m[1], (m[2] / 100 if m[2] is not None else None), m[3]]
@@ -609,7 +859,7 @@ def _us_zone(us, prev=None):
                                   prev_secs=(prev or {}).get("sections"))
     end = max(left_end, right_end - 1)
     blocks += sb
-    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 18], "bg": "#000000"})
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 19], "bg": "#000000"})
     return blocks, end + 2
 
 
@@ -636,13 +886,22 @@ def _kr_zone(kr, prev=None):
                         "5": NET, "6": NET, "7": NET},
                "boldCol": 1, "align": {"1": "center"}}]
     left_end = 1 + 2 + max(len(mk), 1)
+    if kr.get("slot") != "week":              # 분석 블록 — A8부터 (10-20 사용자)
+        anal = _analysis_rows(kr, prev)
+        if anal:
+            blocks.append({"col": 1, "row": 8, "rows": [[t] for t in anal]})
+            left_end = max(left_end, 8 + len(anal))
+    r0 = 1
+    if (kr.get("track") or {}).get("rows"):   # 09:10 전일 TOP 추적 — 종목 표 위
+        tb, r0 = _track_block(kr["track"], 1)
+        blocks.append(tb)
     sb, right_end = _stock_blocks(
-        kr["sections"], False, 1, with_flow=True,   # 10-17 복원(일일도 수급 표시)
+        kr["sections"], False, r0, with_flow=True,  # 10-17 복원(일일도 수급 표시)
         prev_secs=None if kr.get("slot") == "week"
         else (prev or {}).get("sections"))
     end = max(left_end, right_end - 1)
     blocks += sb
-    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 17], "bg": "#000000"})
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 19], "bg": "#000000"})
     return blocks, end + 2
 
 
@@ -659,7 +918,7 @@ def _us_week_zone(usw):
     sb, right_end = _stock_blocks(usw["sections"], True, 1)
     end = max(left_end, right_end - 1)
     blocks += sb
-    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 18], "bg": "#000000"})
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 19], "bg": "#000000"})
     return blocks, end + 2
 
 
@@ -774,7 +1033,7 @@ def push_all() -> int:
                 continue
             kr = kr_hist[date][slot]
             zb, h = _kr_zone(kr, None if slot == "week"
-                             else {"sections": (_prev_kr(date, slot) or {}).get("sections")})
+                             else _prev_kr(date, slot))   # 풀 레코드(분석 블록이 market·date 사용)
             got = _post({"token": token, "date": d_lab, "mode": "insert_or_create",
                          "at": 1, "n": h, "widths": WIDTHS, "blocks": zb})
             if got:
