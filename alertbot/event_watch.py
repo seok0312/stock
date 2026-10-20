@@ -133,7 +133,8 @@ def run(now=None, dry_run=False) -> int:
     state = _load(STATE, {})
     import notify
     notify.load_env(os.path.join(HERE, ".env"),
-                    os.path.abspath(os.path.join(HERE, "..", ".env")))
+                    os.path.abspath(os.path.join(HERE, "..", ".env")),
+                    "/opt/upbit_bot/.env")   # 텔레그램 토큰은 서버에선 여기 (10-20 장애: 누락 시 콘솔 출력만 되고 True)
     esc = notify.esc
     n_sent, fx_cache = 0, {}
     for it in day.get("items") or []:
@@ -202,7 +203,7 @@ def run(now=None, dry_run=False) -> int:
 
 
 def digest(now=None, dry_run=False) -> bool:
-    """일정 다이제스트 — 매일 06:00(오늘 예정)·20:00(완료+야간/내일 예정).
+    """일정 다이제스트 — 매일 06:00(예정 1주)·20:00(오늘 완료 + 예정 1주).
     10-19 사용자: "06시/20시 두 번 + 중간 발표는 실시간(발표완료)만"."""
     now = now or datetime.now(KST)
     cal = _load(CAL, {})
@@ -221,14 +222,16 @@ def digest(now=None, dry_run=False) -> bool:
     items.sort(key=lambda x: x[0])
     import notify
     notify.load_env(os.path.join(HERE, ".env"),
-                    os.path.abspath(os.path.join(HERE, "..", ".env")))
+                    os.path.abspath(os.path.join(HERE, "..", ".env")),
+                    "/opt/upbit_bot/.env")   # 텔레그램 토큰은 서버에선 여기 (10-20 장애: 누락 시 콘솔 출력만 되고 True)
     esc = notify.esc
     up = [(w, it) for w, it in items
           if now < w <= now + timedelta(days=7)]      # 향후 1주 (10-19 사용자)
     L = []
     if now.hour >= 12:                     # 20시 판: 오늘 완료분 정리 포함
         done = [(w, it) for w, it in items
-                if w <= now and w >= now.replace(hour=0, minute=0)]
+                if w <= now and w >= now.replace(hour=0, minute=0,
+                                                 second=0, microsecond=0)]
         if done:
             L.append("<b>오늘 발표완료</b>")
             L += [f"  · {w:%H:%M} {esc(it['name'])}"
