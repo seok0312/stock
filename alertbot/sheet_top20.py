@@ -989,6 +989,18 @@ def _us_zone(us, prev=None):
     return blocks, end + 2
 
 
+# 아침 갭 등급표 (검증 8-12·검증리스트 16, 10-20 확정) — 시장 표와 해석 사이 고정.
+# '잠김'은 예측력 최강이나 매수 불가(상따 영역) → 관찰 지표로 분류 (10-20 사용자).
+GAP_GUIDE = [
+    "📌 아침 갭 등급표 (검증 8-12 · 기저율 11.9%)",
+    "관찰: 상한가 잠김(종가=고가) — 59% · 5.0x · 갭 +3.7% | 매수 불가 → 익일 이월 수요 지표",
+    "실행 1순위: 태그1(개+ 외− 기+) — 31% · 2.6x · +1.0% | 종가 매수 → 익일 동시호가 매도",
+    "2군: +12% 급등 · 2일 누적 +15% · 과열+양봉 눌림마감 — 23~27% · 2.0~2.3x | 양봉 유지 시만",
+    "제외: 과열이어도 음봉 마감 · 급등 없는 돌파 · 전일 하락 — 기저율 수준(엣지 없음)",
+    "게이트: 코스피 60일선 아래 = 갭 플레이 자제 국면(8-7)",
+]
+
+
 def _kr_zone(kr, prev=None):
     """국내 존 — 내용 먼저, 맨 아래 검은 띠(아래 존과 분리). 1행 기준 상대 블록.
     모든 존이 맨 위(1행) 삽입이라 시간순으로 위에 쌓인다 (10-16 사용자:
@@ -1012,11 +1024,16 @@ def _kr_zone(kr, prev=None):
                         "5": NET, "6": NET, "7": NET},
                "boldCol": 1, "align": {"1": "center"}}]
     left_end = 1 + 2 + max(len(mk), 1)
-    if kr.get("slot") != "week":              # 분석 블록 — A8부터 (10-20 사용자)
-        anal = _analysis_rows(kr, prev)
+    if kr.get("slot") != "week":
+        # 등급표(고정) — 시장 표와 해석 사이 (10-20 사용자 배치 지정)
+        blocks.append({"col": 1, "row": 8, "rows": [[t] for t in GAP_GUIDE]})
+        a_row = 8 + len(GAP_GUIDE) + 1
+        anal = _analysis_rows(kr, prev)       # 해석 블록 — 등급표 아래
         if anal:
-            blocks.append({"col": 1, "row": 8, "rows": [[t] for t in anal]})
-            left_end = max(left_end, 8 + len(anal))
+            blocks.append({"col": 1, "row": a_row, "rows": [[t] for t in anal]})
+            left_end = max(left_end, a_row + len(anal))
+        else:
+            left_end = max(left_end, a_row - 1)
     r0 = 1
     if (kr.get("track") or {}).get("rows"):   # 09:10 전일 TOP 추적 — 종목 표 위
         tb, r0 = _track_block(kr["track"], 1)
