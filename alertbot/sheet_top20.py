@@ -695,15 +695,29 @@ def _date_lab(date: str) -> str:
     return f"{d.month}/{d.day:02d} ({'월화수목금토일'[d.weekday()]})"
 
 
+def _hist_metric(fn, cur_date, limit=40):
+    """과거 판들(주간 제외)에서 지표 추출 — 백분위 비교용. 오늘 제외."""
+    vals = []
+    try:
+        for l in open(STORE, encoding="utf-8"):
+            h = json.loads(l)
+            if h.get("v") != 2 or h.get("slot") == "week" or h.get("date") == cur_date:
+                continue
+            v = fn(h)
+            if v is not None:
+                vals.append(v)
+    except FileNotFoundError:
+        pass
+    return vals[-limit:]
+
+
 def _analysis_rows(kr: dict, prev: dict | None):
-    """시장·종목 분석 (10-20 사용자: 왼쪽 빈칸 A8~G45) — 수집 데이터만으로 기계
-    생성, 추정·전망 없이 수치 요약과 쏠림 서술만. 행당 A열 한 칸(B~G 빈칸으로
-    넘쳐 보임), 최대 38행."""
+    """시장·종목 해석 (10-20 사용자 2차: 표에 있는 숫자 재진술 금지 — 인사이트만).
+
+    전부 룰 기반: 검증된 사실(HANDOFF 8-7 국면, 8-8 주체 성향)과 자체 이력
+    백분위에만 근거. 전망·추측 문장은 만들지 않는다."""
     secs = kr.get("sections") or []
     mk = {m[0]: m for m in kr.get("market") or [] if m and m[0]}
-
-    def pct(v):
-        return f"{v:+.2f}%" if v is not None else "?"
 
     def eok(v):
         if v is None:
@@ -721,36 +735,63 @@ def _analysis_rows(kr: dict, prev: dict | None):
         return sorted(agg.items(), key=lambda kv: -kv[1][1])
 
     Lm: list = []
-    ks, kq, fut = mk.get("코스피"), mk.get("코스닥"), mk.get("선물")
-    if ks and kq:
-        c1, c2 = ks[2], kq[2]
-        tone = ("동반 상승" if (c1 or 0) > 0 and (c2 or 0) > 0 else
-                "동반 하락" if (c1 or 0) < 0 and (c2 or 0) < 0 else
-                "혼조 — 코스피 우위" if (c1 or 0) >= (c2 or 0) else "혼조 — 코스닥 우위")
-        fut_s = f" · 선물 {pct(fut[2])}" if fut and fut[2] is not None else ""
-        if c1 is not None or c2 is not None:
-            Lm.append(f"지수: 코스피 {pct(c1)} · 코스닥 {pct(c2)}{fut_s} — {tone}")
-        for m in (ks, kq):
-            p, f_, i = m[4], m[5], m[6]
-            if f_ is None and i is None:
-                continue
-            duo = ("외인·기관 동반 순매수" if (f_ or 0) > 0 and (i or 0) > 0 else
-                   "외인·기관 동반 순매도" if (f_ or 0) < 0 and (i or 0) < 0 else
-                   "외인 매수 vs 기관 매도" if (f_ or 0) > 0 else "외인 매도 vs 기관 매수")
-            pp = f"{p:+,.0f}억" if p is not None else "?"
-            ff = f"{f_:+,.0f}억" if f_ is not None else "?"
-            ii = f"{i:+,.0f}억" if i is not None else "?"
-            Lm.append(f"{m[0]} 수급: 개인 {pp} · 외인 {ff} · 기관 {ii} — {duo}")
+    ks, kq = mk.get("코스피"), mk.get("코스닥")
+    # ① 수급 구조 판독 — 방향(지수) × 주체 조합의 의미 (8-8: 개인 역추세 -0.64)
+    if ks and ks[2] is not None and ks[5] is not None:
+        chg, p, f_, i = ks[2], ks[4] or 0, ks[5] or 0, ks[6] or 0
+        smart = f_ + i
+        if chg < -0.5 and smart < 0 and p > 0:
+            Lm.append(f"수급 구조: 외인·기관 매도(합 {eok(smart)})를 개인이 흡수 — "
+                      "개인은 역추세 주체(8-8, 상관 -0.64)라 받침이지 반전 신호 아님")
+        elif chg < -0.5 and f_ > 0:
+            Lm.append(f"수급 구조: 낙폭에 외인 역매수({eok(f_)}) — 순추세 주체의 "
+                      "역방향 유입, 드문 조합(전환 관찰 대상)")
+        elif chg > 0.5 and f_ > 0 and i > 0:
+            Lm.append("수급 구조: 외인·기관 동반 매수의 상승 — 순추세 주체 주도"
+                      "(지속성은 개인 주도 상승보다 양호)")
+        elif chg > 0.5 and smart < 0 and p > 0:
+            Lm.append("수급 구조: 개인이 끌어올린 상승(외인·기관은 매도) — "
+                      "순추세 주체 부재, 되돌림 취약 구조")
+    # ② 외인 극단성 — 이력 백분위 (극단일 때만 한 줄)
+    if ks and ks[5] is not None:
+        hist_f = _hist_metric(
+            lambda h: next((m[5] for m in h.get("market") or []
+                            if m and m[0] == "코스피"), None), kr.get("date"))
+        if len(hist_f) >= 10:
+            below = sum(1 for v in hist_f if v < ks[5])
+            pr = below / len(hist_f) * 100
+            if pr <= 15:
+                Lm.append(f"외인 코스피 순매도 강도: 최근 {len(hist_f)}판 중 "
+                          f"하위 {pr:.0f}% — 투매 극단 구간")
+            elif pr >= 85:
+                Lm.append(f"외인 코스피 순매수 강도: 최근 {len(hist_f)}판 중 "
+                          f"상위 {100 - pr:.0f}% — 유입 극단 구간")
+    # ③ 대금 증감의 성격 (직전 판 대비 — 증감률만, 절대값 재진술 없음)
+    if ks and kq and (ks[3] or kq[3]):
         amt = (ks[3] or 0) + (kq[3] or 0)
-        if amt:
-            cmp_s = ""
-            pmk = {m[0]: m for m in (prev or {}).get("market") or [] if m and m[0]}
-            pamt = ((pmk.get("코스피") or [None] * 4)[3] or 0) + \
-                   ((pmk.get("코스닥") or [None] * 4)[3] or 0)
-            if pamt and prev:
-                cmp_s = (f" (직전 {_date_lab(prev['date'])} {prev.get('slot', '')}판 "
-                         f"{pamt:.1f}조)" if prev.get("date") else "")
-            Lm.append(f"거래대금: 코스피+코스닥 {amt:.1f}조{cmp_s}")
+        pmk = {m[0]: m for m in (prev or {}).get("market") or [] if m and m[0]}
+        pamt = ((pmk.get("코스피") or [None] * 4)[3] or 0) +                ((pmk.get("코스닥") or [None] * 4)[3] or 0)
+        if amt and pamt:
+            d = (amt / pamt - 1) * 100
+            chg = ks[2] or 0
+            if abs(d) >= 5:
+                nature = ("대금 실린 하락(손바뀜 동반 투매, 관망성 아님)"
+                          if d > 0 and chg < 0 else
+                          "대금 실린 상승(참여 확산)" if d > 0 else
+                          "대금 마른 하락(매수 공백형 — 투매보다 관망)" if chg < 0 else
+                          "대금 마른 상승(참여 얕음)")
+                Lm.append(f"거래대금 직전판 대비 {d:+.0f}% — {nature}")
+    # ④ 국면 룰 (검증 8-7: 갭은 60일선 아래 엣지 소멸)
+    try:
+        import tag_track
+        reg = tag_track._kospi_above60()
+        if reg:
+            Lm.append("국면: 코스피 60일선 "
+                      + ("위 — 갭(태그1)·손바뀜 정상 운용" if reg["above60"]
+                         else "아래 — 갭(태그1) 자제 국면(8-7), 손바뀜 D+5 는 정상"))
+    except Exception:
+        pass
+    # ⑤ 전일 주도주 추적 판정 (기존 유지 — 해석형)
     tr = kr.get("track") or {}
     if tr.get("rows"):
         chgs = [x["chg"] for x in tr["rows"] if x.get("chg") is not None]
@@ -758,59 +799,113 @@ def _analysis_rows(kr: dict, prev: dict | None):
             up = sum(1 for c in chgs if c > 0)
             dn = sum(1 for c in chgs if c < 0)
             Lm.append(f"전일 주도주 {len(chgs)}종목: 상승 {up} · 하락 {dn} · "
-                     f"평균 {sum(chgs) / len(chgs):+.1f}% — "
-                     + ("갭 지속 우세" if up > dn else "갭 소멸 우세" if dn > up else "팽팽"))
+                      f"평균 {sum(chgs) / len(chgs):+.1f}% — "
+                      + ("갭 지속 우세" if up > dn else
+                         "갭 소멸 우세" if dn > up else "팽팽"))
 
     rows_amt = (secs[0].get("rows") if secs else []) or []
     rows_up = (secs[1].get("rows") if len(secs) > 1 else []) or []
     rows_lim = (secs[2].get("rows") if len(secs) > 2 else []) or []
     Ls: list = []
+    # ⑥ 주도 섹터 — 1위 섹터의 지배력 해석
     ag = sec_agg(rows_amt)
-    if ag:
-        Ls.append("주도 섹터(대금 TOP15): " + " · ".join(
-            f"{s} {n}종목 {eok(a)}" for s, (n, a) in ag[:3]))
     top_amt = sum(x.get("amt_eok") or 0 for x in rows_amt)
-    # 분모는 같은 소스(ka10032)의 상위 200 합 — 시장 전체 대금(flows)과는 산출
-    # 기준이 달라 섞으면 80%대 과대(10-20 실측: 상위200 합 > 시장 전체)
+    if ag and top_amt:
+        s1, (n1, a1) = ag[0]
+        dom = a1 / top_amt * 100
+        tail = (f" — TOP{TOP_N} 대금의 {dom:.0f}%, 단일 섹터 장세" if dom >= 60
+                else f" — {dom:.0f}% 지배, " + ("양강 구도" if len(ag) > 1
+                     and ag[1][1][1] / top_amt >= 0.2 else "분산 장세"))
+        Ls.append(f"주도 섹터: {s1} {n1}종목 {eok(a1)}{tail}")
+    # ⑦ 쏠림 집중도 — 이력 중앙값 대비
     a200 = sum((r[3] or 0) for r in kr.get("amt100") or [])
     if top_amt and a200:
         share = top_amt / a200 * 100
-        Ls.append(f"대금 TOP{TOP_N} 합 {eok(top_amt)} = 대금 상위 200종목의 {share:.0f}%"
-                 + (" — 쏠림 강함" if share >= 70 else ""))
-    both_buy = sorted([x for x in rows_amt
-                       if ((x.get("flow") or {}).get("f") or 0) > 0
-                       and ((x.get("flow") or {}).get("i") or 0) > 0],
-                      key=lambda x: -((x["flow"]["f"] or 0) + (x["flow"]["i"] or 0)))
-    if both_buy:
+        hist_s = _hist_metric(
+            lambda h: (sum(x.get("amt_eok") or 0
+                           for x in (h.get("sections") or [{}])[0].get("rows") or [])
+                       / s2 * 100) if (s2 := sum((r[3] or 0)
+                                                 for r in h.get("amt100") or [])) else None,
+            kr.get("date"))
+        if len(hist_s) >= 8:
+            med = sorted(hist_s)[len(hist_s) // 2]
+            if share - med >= 5:
+                Ls.append(f"쏠림 {share:.0f}% (평소 {med:.0f}%) — 주도주 압축 장세, "
+                          "소수 종목 외 소외")
+            elif med - share >= 5:
+                Ls.append(f"쏠림 {share:.0f}% (평소 {med:.0f}%) — 분산 장세, "
+                          "주도주 식별 난도 상승")
+    # ⑧ 동반 매수/매도 — 해석 꼬리 포함
+    def _duo(rows, buy):
+        out = []
+        for x in rows:
+            fl = x.get("flow") or {}
+            f_, i = fl.get("f") or 0, fl.get("i") or 0
+            if (buy and f_ > 0 and i > 0) or (not buy and f_ < 0 and i < 0):
+                out.append((x, f_ + i))
+        out.sort(key=lambda t: -abs(t[1]))
+        return out
+    bb = _duo(rows_amt, True)
+    if bb:
         Ls.append("외인·기관 동반 매수: " + " · ".join(
-            f"{x['name']}(+{(x['flow']['f'] or 0) + (x['flow']['i'] or 0):,.0f}억)"
-            for x in both_buy[:5]))
-    both_sell = sorted([x for x in rows_amt
-                        if ((x.get("flow") or {}).get("f") or 0) < 0
-                        and ((x.get("flow") or {}).get("i") or 0) < 0],
-                       key=lambda x: (x["flow"]["f"] or 0) + (x["flow"]["i"] or 0))
-    if both_sell:
+            f"{x['name']}({v:+,.0f}억)" for x, v in bb[:4]))
+    bs = _duo(rows_amt, False)
+    if bs:
+        tail = ""
+        if rows_amt and bs[0][0].get("code") == rows_amt[0].get("code"):
+            tail = " — 대금 1위가 매도 집중 대상(주도주 차익실현)"
         Ls.append("외인·기관 동반 매도: " + " · ".join(
-            f"{x['name']}({(x['flow']['f'] or 0) + (x['flow']['i'] or 0):+,.0f}억)"
-            for x in both_sell[:5]))
-    agu = sec_agg(rows_up)
-    if agu:
-        Ls.append("상승률 TOP15 쏠림: " + " · ".join(
-            f"{s} {n}종목" for s, (n, _) in sorted(agu, key=lambda kv: -kv[1][0])[:3]))
+            f"{x['name']}({v:+,.0f}억)" for x, v in bs[:4]) + tail)
+    # ⑨ 오늘 태그 조인 — 종가베팅 실행과 직결
+    try:
+        tag_map = {}
+        for l in open(os.path.join(DATA, "tag_picks.jsonl"), encoding="utf-8"):
+            r = json.loads(l)
+            if r.get("date") == kr.get("date") and r.get("tag"):
+                tag_map[r["code"]] = r["tag"]
+        if tag_map:
+            seen_codes = {x.get("code") for x in rows_amt + rows_up}
+            hits = {}
+            for c in seen_codes & set(tag_map):
+                nm = next((x["name"] for x in rows_amt + rows_up
+                           if x.get("code") == c), c)
+                hits.setdefault(tag_map[c], []).append(nm)
+            lab = {"갭": "갭(익일 매도)", "손바뀜": "손바뀜(D+5 보유)",
+                   "회피": "회피(자제)"}
+            if hits:
+                Ls.append("오늘 수급 태그: " + " / ".join(
+                    f"{lab.get(t, t)} {len(ns)} — {'·'.join(ns[:4])}"
+                    for t, ns in hits.items()))
+    except Exception:
+        pass
+    # ⑩ 상한가 그룹성 감지 — 같은 2글자 접두사 ≥2 = 계열/테마 연쇄
     if rows_lim:
-        Ls.append(f"상한가 {len(rows_lim)}종목: " + " · ".join(
-            x["name"] + (f"({(x.get('sec') or '').strip()})" if x.get("sec") else "")
-            for x in rows_lim[:6]) + (" 외" if len(rows_lim) > 6 else ""))
+        pref: dict = {}
+        for x in rows_lim:
+            pref.setdefault(x["name"][:2], []).append(x["name"])
+        grp = [v for v in pref.values() if len(v) >= 2]
+        if grp:
+            g = max(grp, key=len)
+            Ls.append(f"상한가 {len(rows_lim)}종목 중 '{g[0][:2]}' 계열 {len(g)}종 연쇄 — "
+                      "그룹성 수급, 종가베팅 비대상(잡주 정책)")
+        else:
+            agl = sec_agg(rows_lim)
+            if agl and agl[0][1][0] >= 3:
+                Ls.append(f"상한가 {len(rows_lim)}종목 중 {agl[0][0]} {agl[0][1][0]}종 — "
+                          "단일 섹터 테마 연쇄")
+    # ⑪ 신규 진입 — 섹터 꼬리
     if prev and (prev.get("sections") or []):
         pcodes = {x.get("code") for x in (prev["sections"][0].get("rows") or [])}
-        fresh = [x["name"] for x in rows_amt if x.get("code") not in pcodes]
+        fresh = [x for x in rows_amt if x.get("code") not in pcodes]
         if fresh:
-            Ls.append("대금 TOP15 신규 진입(직전 판 대비): " + " · ".join(fresh[:8]))
-    out = []                                  # 내용 있는 섹션만 머리글 포함
+            Ls.append("대금 TOP 신규 진입: " + " · ".join(
+                x["name"] + (f"({(x.get('sec') or '').strip()})" if x.get("sec") else "")
+                for x in fresh[:6]))
+    out = []
     if Lm:
-        out += ["💡 시장 분석"] + Lm
+        out += ["💡 시장 해석"] + Lm
     if Ls:
-        out += ([""] if out else []) + ["💡 종목 분석"] + Ls
+        out += ([""] if out else []) + ["💡 종목 해석"] + Ls
     return out[:38] if out else None          # A8~G45 한도
 
 
