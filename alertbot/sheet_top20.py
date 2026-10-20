@@ -807,6 +807,37 @@ def _analysis_rows(kr: dict, prev: dict | None):
     rows_up = (secs[1].get("rows") if len(secs) > 1 else []) or []
     rows_lim = (secs[2].get("rows") if len(secs) > 2 else []) or []
     Ls: list = []
+    # 09:10판 전용 — 아침 상승 TOP15 의 '전일 프로필' (10-20 분석, HANDOFF 8-12:
+    # 아침 갭 top15 리프트 = 상한가+잠김 5.0x · 전일 태그1 2.6x · 상한가 2.6x ·
+    # 12%급등 2.2x · 눌림마감 2.0x > 고가마감 1.7x, 기저 11.9%)
+    if kr.get("slot") == "09:10" and rows_up and prev:
+        psecs = prev.get("sections") or []
+        p_lim = {x.get("code") for x in (psecs[2].get("rows") if len(psecs) > 2
+                                         else []) or []}
+        p_up = {x.get("code") for x in (psecs[1].get("rows") if len(psecs) > 1
+                                        else []) or []}
+        p_amt = {x.get("code") for x in (psecs[0].get("rows") if psecs
+                                         else []) or []}
+        ptags = {}
+        try:
+            for l in open(os.path.join(DATA, "tag_picks.jsonl"), encoding="utf-8"):
+                r = json.loads(l)
+                if r.get("date") == prev.get("date") and r.get("tag"):
+                    ptags[r["code"]] = r["tag"]
+        except Exception:
+            pass
+        cs = [x.get("code") for x in rows_up]
+        n_lim = sum(1 for c in cs if c in p_lim)
+        n_up = sum(1 for c in cs if c in p_up)
+        n_amt = sum(1 for c in cs if c in p_amt)
+        n_t1 = sum(1 for c in cs if ptags.get(c) == "갭")
+        n_t3 = sum(1 for c in cs if ptags.get(c) == "손바뀜")
+        n_new = sum(1 for c in cs if c not in (p_lim | p_up | p_amt)
+                    and c not in ptags)
+        Ls.append(f"아침 TOP15 전일 프로필: 상한가 출신 {n_lim} · 상승TOP 재등장 {n_up}"
+                  f" · 대금TOP {n_amt} · 태그1 {n_t1} · 태그3 {n_t3} · 전일 무흔적 {n_new}")
+        Ls.append("(역사 리프트: 상한가+잠김 5.0x · 태그1 2.6x · 상한가 2.6x · "
+                  "12%급등 2.2x — 전일 강세의 연장이 아침 갭의 본체)")
     # ⑥ 주도 섹터 — 1위 섹터의 지배력 해석
     ag = sec_agg(rows_amt)
     top_amt = sum(x.get("amt_eok") or 0 for x in rows_amt)
