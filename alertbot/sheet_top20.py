@@ -321,9 +321,9 @@ def _strategy_picks(today: str, cur_map=None) -> dict:
         pos, bull = candle(r["code"])
         time.sleep(0.05)
         item = {"code": r["code"], "name": r["name"], "chg": r["chg"],
-                "buy": r.get("close"),                 # 15:30 종가 (백테스트 기준)
+                "buy": r.get("close"),                 # 기록시점가(지연 시세 가능, 참고용)
                 "buy_eve": (cur_map or {}).get(r["code"])}  # 수집 시점 통합가
-                                                       # (20시판 = 저녁 실행가)
+                                                       # (20시판 = 저녁 최종가 E)
         if tag == "갭" and above:
             if bull and pos is not None and 0.5 <= pos < 0.8:
                 out["t1"].append(item)
@@ -336,8 +336,12 @@ def _strategy_picks(today: str, cur_map=None) -> dict:
 
 def _eval_yesterday_picks(today: str) -> list:
     """전일 확정 전략 픽의 실제 성적 — 09:10판 (10-21 사용자).
-    종목1(갭) = 매수가(전일 종가) 대비 '오늘 시가' = 전략 확정 손익.
-    종목2(손바뀜) = 매수가 대비 현재가(보유 중 평가)."""
+    종목1(갭) = 매수가 대비 '오늘 시가' = 전략 확정 손익.
+    종목2(손바뀜) = 매수가 대비 현재가(보유 중 평가).
+
+    매수가(분모) = 전일 '정규장 종가 R' — 오늘 시세 row 의 (현재가−전일비)로 복원.
+    tag 기록 close 는 지연 시세(15:20경)라 분모로 쓰지 않는다 (10-21 멜콘 14,990≠R 15,390).
+    저녁 세션(9-14 개시, 시간외·NXT ~20시)에 산 경우를 위해 buy_eve(20:05 통합가) 병기."""
     hist = []
     try:
         for l in open(STORE, encoding="utf-8"):
@@ -356,10 +360,15 @@ def _eval_yesterday_picks(today: str) -> list:
             j = requests.get(f"https://m.stock.naver.com/api/stock/{code}/price",
                              params={"pageSize": 1}, headers=NAVER_UA,
                              timeout=8).json()[0]
-            return (float(str(j["openPrice"]).replace(",", "")),
-                    float(str(j["closePrice"]).replace(",", "")))
+
+            def f(k):
+                return float(str(j[k]).replace(",", ""))
+
+            return {"dt": str(j.get("localTradedAt", ""))[:10].replace("-", ""),
+                    "o": f("openPrice"), "c": f("closePrice"),
+                    "R": f("closePrice") - f("compareToPreviousClosePrice")}
         except Exception:
-            return None, None
+            return None
 
     out = []
     for key, head, use_open in (("t1", "종목1(갭→시가 매도)", True),
@@ -369,17 +378,17 @@ def _eval_yesterday_picks(today: str) -> list:
             continue
         parts = []
         for x in items:
-            o, c = quote(x["code"])
-            px = o if use_open else c
-            buy, eve = x.get("buy"), x.get("buy_eve")
-            if px and buy:
-                s = f"{x['name']}({(px / buy - 1) * 100:+.1f}%"
-                if eve and abs(eve - buy) / buy > 0.001:
-                    s += f" 종가基 / {(px / eve - 1) * 100:+.1f}% 저녁基"
-                parts.append(s + ")")
-            else:
-                parts.append(f"{x['name']}(?)")
+            q = quote(x["code"])
             time.sleep(0.05)
+            if not q or q["dt"] != today or not q["R"] or q["R"] <= 0:
+                parts.append(f"{x['name']}(?)")      # 거래정지·데이터 지연
+                continue
+            px = q["o"] if use_open else q["c"]
+            s = f"{x['name']}({(px / q['R'] - 1) * 100:+.1f}%"
+            eve = x.get("buy_eve")
+            if eve and abs(eve / q["R"] - 1) > 0.001:
+                s += f" / 저녁매수 {(px / eve - 1) * 100:+.1f}%"
+            parts.append(s + ")")
         out.append(f"{head}: " + " · ".join(parts))
     if not out and (pk.get("t1") or pk.get("t3")):
         return []
