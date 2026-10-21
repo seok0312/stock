@@ -24,6 +24,10 @@ STATE = os.path.join(HERE, "data", "event_watch.json")
 CAL = "/var/www/html/calendar.json"
 FRESH_MIN = 30          # 이보다 오래 지난 일정은 알리지 않고 마킹만
 WAIT_ACTUAL_MIN = 45    # 지표 실제값 대기 한도
+US_EARN_WAIT_MIN = 180  # 미국 실적 실제 EPS 대기 — 야후 반영이 수 분(TSLA)~
+                        # 수 시간(META) 지연됨 (10-22 사용자: 예상치만 와서 수정)
+UA_STR = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
 
 
 def _load(path, default):
@@ -123,6 +127,44 @@ def _kr_earn_actual(comp: str, event_name: str, now):
     return {"line": " · ".join(body), "title": title, "url": url}
 
 
+def _us_earn_actual(sym: str, now):
+    """야후 earningsHistory 에서 '이번 발표' 분기의 (실제 EPS, 예상, 서프라이즈).
+
+    v10 quoteSummary 는 crumb 필수(무크럼 401, 10-22) — fc.yahoo.com 쿠키 →
+    getcrumb → 조회. 새 분기 행 반영이 발표 후 수 분~수 시간 걸리므로 분기말이
+    최근 75일 내인 행만 이번 발표로 인정, 아니면 None(호출측 대기)."""
+    import requests
+    try:
+        s = requests.Session()
+        s.headers["User-Agent"] = UA_STR
+        try:
+            s.get("https://fc.yahoo.com", timeout=8)
+        except requests.RequestException:
+            pass
+        crumb = s.get("https://query1.finance.yahoo.com/v1/test/getcrumb",
+                      timeout=8).text.strip()
+        if not crumb or len(crumb) > 24:
+            return None
+        j = s.get(f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}",
+                  params={"modules": "earningsHistory", "crumb": crumb},
+                  timeout=10).json()
+        rows = (((j.get("quoteSummary") or {}).get("result") or [{}])[0]
+                .get("earningsHistory") or {}).get("history") or []
+        rows = [r for r in rows if (r.get("quarter") or {}).get("raw")]
+        if not rows:
+            return None
+        nw = max(rows, key=lambda r: r["quarter"]["raw"])
+        if now.timestamp() - nw["quarter"]["raw"] > 75 * 86400:
+            return None                   # 신규 분기 행 아직 미반영
+        a = (nw.get("epsActual") or {}).get("raw")
+        if a is None:
+            return None
+        return (a, (nw.get("epsEstimate") or {}).get("raw"),
+                (nw.get("surprisePercent") or {}).get("raw"))
+    except Exception:
+        return None
+
+
 def run(now=None, dry_run=False) -> int:
     now = now or datetime.now(KST)
     today = now.strftime("%Y%m%d")
@@ -151,7 +193,10 @@ def run(now=None, dry_run=False) -> int:
         if when > now:
             continue
         age_min = (now - when).total_seconds() / 60
-        if age_min > FRESH_MIN and not (it.get("type") == "지표" and age_min <= WAIT_ACTUAL_MIN):
+        us_earn = it.get("type") == "실적" and "🇺🇸" in it["name"]
+        if age_min > FRESH_MIN and not (
+                (it.get("type") == "지표" and age_min <= WAIT_ACTUAL_MIN)
+                or (us_earn and age_min <= US_EARN_WAIT_MIN)):
             state[key] = f"{now.isoformat(timespec='seconds')} (지남-마킹)"
             continue
         core = re.sub(r"^[^\w가-힣]+", "", it["name"]).strip()
@@ -177,6 +222,30 @@ def run(now=None, dry_run=False) -> int:
                 if it.get("val"):
                     body.append(esc(it["val"]))
             lines = " · ".join(body)
+        elif us_earn:
+            m = re.match(r"([A-Z]{1,5})\b", core)
+            got = _us_earn_actual(m.group(1), now) if m else None
+            if got is None and m and age_min < US_EARN_WAIT_MIN:
+                continue                 # 야후 신규 분기 행 대기 — 마킹 안 함
+            if got is None and "잠정일" in (it.get("val") or ""):
+                # 잠정일 추정 + 3시간 내 실제치 無 = 발표 자체가 없었을 공산
+                # (10-22 META 오탐: 실제는 10/28 추정) — 발표완료 단정 금지
+                state[key] = (f"{now.isoformat(timespec='seconds')} "
+                              "(잠정일-실제치 미확인, 알림 보류)")
+                print(f"[watch] 보류(잠정일 미확인): {it['name']}")
+                continue
+            if got:
+                a, e, sp = got
+                body = [f"EPS 실제 <b>${a:g}</b>"]
+                if e is not None:
+                    body.append(f"예상 ${e:.2f}")
+                if sp is not None:
+                    body.append("<b>" + f"{abs(sp) * 100:.0f}% "
+                                + ("상회" if sp >= 0 else "하회") + "</b>")
+                lines = " · ".join(body)
+            else:                        # 한도 초과 — 예상치라도 발송
+                lines = (esc(it.get("val") or "")
+                         + " · 실제값 야후 미게시(지연)").strip(" ·")
         elif it.get("type") == "실적" and "🇰🇷" in it["name"]:
             comp = next((c for c in KR_EARN_CODE if c in core), None)
             got = _kr_earn_actual(comp, core, now) if comp else None
@@ -193,7 +262,8 @@ def run(now=None, dry_run=False) -> int:
         msg = (f"📢 <b>발표완료</b> ({it['t']})\n{esc(it['name'])}"
                + (f"\n{lines}" if lines else ""))
         ok = notify.send(msg, dry_run=dry_run, allow_muted=True)
-        state[key] = now.isoformat(timespec="seconds")
+        # 실제치 라인을 상태에 보존 → 다이제스트 완료분에 재사용 (10-22)
+        state[key] = {"at": now.isoformat(timespec="seconds"), "line": lines or ""}
         n_sent += 1
         print(f"[watch] 알림: {it['name']} ({it['t']}) 발송={ok}")
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
@@ -218,25 +288,35 @@ def digest(now=None, dry_run=False) -> bool:
                     hour=int(hh), minute=int(mm), tzinfo=KST)
             except Exception:
                 continue
-            items.append((when, it))
+            items.append((when, it, d["date"]))
     items.sort(key=lambda x: x[0])
     import notify
     notify.load_env(os.path.join(HERE, ".env"),
                     os.path.abspath(os.path.join(HERE, "..", ".env")),
                     "/opt/upbit_bot/.env")   # 텔레그램 토큰은 서버에선 여기 (10-20 장애: 누락 시 콘솔 출력만 되고 True)
     esc = notify.esc
-    up = [(w, it) for w, it in items
+    up = [(w, it) for w, it, _ in items
           if now < w <= now + timedelta(days=7)]      # 향후 1주 (10-19 사용자)
     L = []
-    if now.hour >= 12:                     # 20시 판: 오늘 완료분 정리 포함
-        done = [(w, it) for w, it in items
-                if w <= now and w >= now.replace(hour=0, minute=0,
-                                                 second=0, microsecond=0)]
-        if done:
-            L.append("<b>오늘 발표완료</b>")
-            L += [f"  · {w:%H:%M} {esc(it['name'])}"
-                  + (f" — {esc(it['val'])}" if it.get("val") else "")
-                  for w, it in done]
+    state = _load(STATE, {})
+    # 완료분: 아침판도 포함 (10-22 사용자: 밤사이 미국 실적이 빠졌음 → 수정).
+    # 아침판 = 전날 20:00 다이제스트 이후(−10h), 저녁판 = 오늘 0시부터.
+    if now.hour >= 12:
+        d_from, d_hdr = now.replace(hour=0, minute=0, second=0,
+                                    microsecond=0), "오늘 발표완료"
+    else:
+        d_from, d_hdr = now - timedelta(hours=10), "밤사이 발표완료"
+    done = [(w, it, dk) for w, it, dk in items if d_from <= w <= now]
+    if done:
+        L.append(f"<b>{d_hdr}</b>")
+        for w, it, dk in done:
+            sv = state.get(f"{dk}|{it['t']}|{it['name']}")
+            extra = ((sv.get("line") or "").split("\n")[0]
+                     if isinstance(sv, dict) else "")
+            if not extra and it.get("val"):      # 실제치 미보존 — 예정 문구 폴백
+                extra = esc(it["val"])
+            L.append(f"  · {w:%H:%M} {esc(it['name'])}"
+                     + (f" — {extra}" if extra else ""))
     if up:
         if L:
             L.append("")
