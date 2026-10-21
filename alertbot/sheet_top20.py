@@ -199,10 +199,12 @@ def _prev_trading_rec(hist, today: str):
     return slots.get("20:00") or slots[max(slots)]
 
 
-def _build_track(base: dict, now, kc):
+def _build_track(base: dict, now, kc, cur_map=None):
     """전일 대금·상승률 TOP 합집합 → 현재 등락률순 추적 리스트 + 거래원 원장
     (10-20 사용자: ① 상승/하락 빨·파 채우기 ② 상승률순 리스트 ③ 거래원별 수급
-    기록 — 분석용). 등락률·거래원은 ka10002 한 콜, 키움 실패 시 네이버 폴백."""
+    기록 — 분석용). 등락률·거래원은 ka10002 한 콜, 키움 실패 시 네이버 폴백.
+    cur_map(10-21): 같은 수집의 ka10032 통합(KRX+NXT) 등락률 {code: chg} —
+    ka10002 는 KRX 단독가라 대금 표와 0.1~0.8%p 어긋나던 것을 통일."""
     today = now.strftime("%Y%m%d")
     rows, seen = [], {}
     for si, s in enumerate((base.get("sections") or [])[:2]):
@@ -231,7 +233,10 @@ def _build_track(base: dict, now, kc):
             try:
                 d, _ = kc.request("ka10002", {"stk_cd": r["code"]},
                                   endpoint="/api/dostk/stkinfo")
-                r["chg"] = _num(d.get("flu_rt"))
+                # 등락률은 통합(ka10032) 값 우선 — 대금 표와 기준 통일 (10-21)
+                r["chg"] = ((cur_map or {}).get(r["code"])
+                            if (cur_map or {}).get(r["code"]) is not None
+                            else _num(d.get("flu_rt")))
                 fails = 0
             except Exception:
                 d = None
@@ -509,7 +514,9 @@ def collect(now=None) -> dict | None:
         base = _prev_trading_rec(hist, today)
         if base:
             try:
-                rec["track"] = _build_track(base, now, kc)
+                rec["track"] = _build_track(
+                    base, now, kc,
+                    cur_map={c: v["chg"] for c, v in amt_rows.items()})
                 print(f"[top20] 전일({base['date']} {base.get('slot')}판) TOP 추적 "
                       f"{len(rec['track']['rows'])}종목")
             except Exception as e:
