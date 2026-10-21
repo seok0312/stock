@@ -75,7 +75,8 @@ def _kiwoom_fetch():
             if not code or not nm or amt is None or EXCL_PAT.search(nm):
                 continue
             amt_rows[code] = {"code": code, "name": nm, "mkt": lab,
-                              "amt_eok": round(amt / 100), "chg": chg}
+                              "amt_eok": round(amt / 100), "chg": chg,
+                              "cur": _num(r.get("cur_prc"))}
         time.sleep(0.1)
     up_rows = []
     for mrkt, lab in (("001", "코스피"), ("101", "KOSDAQ")):
@@ -281,7 +282,7 @@ def _build_track(base: dict, now, kc, cur_map=None):
     return {"base_date": base["date"], "base_slot": base.get("slot"), "rows": rows}
 
 
-def _strategy_picks(today: str) -> dict:
+def _strategy_picks(today: str, cur_map=None) -> dict:
     """확정 전략 부합 종목 (10-21 사용자: 등급표 아래 '종목:' 자동 기입).
 
     종목1 = 60일선 위 ∧ 태그1(갭) ∧ 주도주 ∧ 양봉 눌림(pos .5~.8, 8-13 보정)
@@ -320,7 +321,9 @@ def _strategy_picks(today: str) -> dict:
         pos, bull = candle(r["code"])
         time.sleep(0.05)
         item = {"code": r["code"], "name": r["name"], "chg": r["chg"],
-                "buy": r.get("close")}
+                "buy": r.get("close"),                 # 15:30 종가 (백테스트 기준)
+                "buy_eve": (cur_map or {}).get(r["code"])}  # 수집 시점 통합가
+                                                       # (20시판 = 저녁 실행가)
         if tag == "갭" and above:
             if bull and pos is not None and 0.5 <= pos < 0.8:
                 out["t1"].append(item)
@@ -368,9 +371,12 @@ def _eval_yesterday_picks(today: str) -> list:
         for x in items:
             o, c = quote(x["code"])
             px = o if use_open else c
-            buy = x.get("buy")
+            buy, eve = x.get("buy"), x.get("buy_eve")
             if px and buy:
-                parts.append(f"{x['name']}({(px / buy - 1) * 100:+.1f}%)")
+                s = f"{x['name']}({(px / buy - 1) * 100:+.1f}%"
+                if eve and abs(eve - buy) / buy > 0.001:
+                    s += f" 종가基 / {(px / eve - 1) * 100:+.1f}% 저녁基"
+                parts.append(s + ")")
             else:
                 parts.append(f"{x['name']}(?)")
             time.sleep(0.05)
@@ -495,7 +501,9 @@ def collect(now=None) -> dict | None:
     # 같은 날 같은 슬롯만 교체, 다른 슬롯은 보존
     slot = _slot_of(now.hour, now.minute)
     rec["slot"] = slot
-    rec["picks"] = _strategy_picks(today)   # 확정 전략 자동 기입 (10-21)
+    rec["picks"] = _strategy_picks(
+        today, cur_map={c: abs(v["cur"]) for c, v in amt_rows.items()
+                        if v.get("cur")})   # 확정 전략 + 수집 시점 실행가 (10-21)
     if slot == "09:10":
         rec["yest_eval"] = _eval_yesterday_picks(today)
     hist = []
