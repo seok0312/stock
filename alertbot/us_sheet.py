@@ -284,10 +284,11 @@ def collect(now=None) -> dict | None:
         return None
     sess = max(r["last"] for r in rows)
     rows = [r for r in rows if r["last"] == sess]        # 묵은 종목 제외
-    top = sorted(rows, key=lambda r: -r["dvol"])[:15]
-    # 상승률 top10 — $1B 필터 표는 제거(10-16 사용자 상담): 유니버스 자체가
-    # 유동성 필터라 두 표가 60~70% 중복, 필터는 정보만 깎음. 단일 표 확정.
-    gain = sorted([r for r in rows if r["chg"] > 0],
+    byvol = sorted(rows, key=lambda r: -r["dvol"])
+    top = byvol[:15]
+    # 상승률은 거래대금 상위 100위 풀에서만 (10-22 사용자 — 한국 시트와 동일
+    # 규칙. 10-16의 $1B 고정 필터 제거 결정을 '상대 순위 필터'로 대체)
+    gain = sorted([r for r in byvol[:100] if r["chg"] > 0],
                   key=lambda r: -r["chg"])[:15]
     for r in top + gain:
         if "issue" not in r:
@@ -345,7 +346,7 @@ def collect(now=None) -> dict | None:
            "summary": _summary(market, rows, top, gain),
            "sections": [
                {"title": "거래대금 TOP 15", "rows": pack(top)},
-               {"title": "상승률 TOP 15", "rows": pack(gain)}]}
+               {"title": "상승률 TOP 15 (거래대금 상위 100위)", "rows": pack(gain)}]}
     hist = []
     try:
         hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]
@@ -355,8 +356,9 @@ def collect(now=None) -> dict | None:
     if wk_mode:
         wrows = [r for r in rows if r.get("wchg") is not None]
         wlab = next((r["wlab"] for r in wrows if r.get("wlab")), "")
-        wtop = sorted(wrows, key=lambda r: -(r.get("wvol") or 0))[:15]
-        wgain = sorted([r for r in wrows if r["wchg"] > 0],
+        wbyvol = sorted(wrows, key=lambda r: -(r.get("wvol") or 0))
+        wtop = wbyvol[:15]
+        wgain = sorted([r for r in wbyvol[:100] if r["wchg"] > 0],
                        key=lambda r: -r["wchg"])[:15]
 
         def wpack(rs):
@@ -368,7 +370,8 @@ def collect(now=None) -> dict | None:
                 "week_label": wlab, "market": market_w,
                 "sections": [
                     {"title": f"주간 거래대금 TOP 15 ({wlab})", "rows": wpack(wtop)},
-                    {"title": f"주간 상승률 TOP 15 ({wlab})", "rows": wpack(wgain)}]}
+                    {"title": f"주간 상승률 TOP 15 (대금 상위 100위, {wlab})",
+                     "rows": wpack(wgain)}]}
         hist = [h for h in hist
                 if not (h["date"] == today and h.get("week"))] + [wrec]
         print(f"[us_sheet] 주간 서머리 생성 ({wlab}, {len(wrows)}종목)")
