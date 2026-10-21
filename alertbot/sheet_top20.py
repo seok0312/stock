@@ -417,11 +417,15 @@ def _eval_yesterday_picks(today: str) -> list:
 
 
 def _slot_of(hour: int, minute: int) -> str:
-    """수집 시각 → 슬롯 버킷. 09:10/14:30/19:00/20:00 크론 ± 수동 실행 흡수."""
+    """수집 시각 → 슬롯 버킷. 08:10/09:10/14:30/15:40/19:00/20:00 크론 ± 수동 흡수."""
+    if hour < 9:
+        return "08:10"        # 프리마켓 (10-22 사용자)
     if hour < 12:
         return "09:10"        # 장 초반 (10-19 사용자)
-    if hour < 17:
+    if hour < 15:
         return "14:30"
+    if hour < 17:
+        return "15:40"        # 종가 확정 직후 — 장후종가거래 내 픽 확인용 (10-22)
     if (hour, minute) < (19, 40):
         return "19:00"
     return "20:00"
@@ -1128,6 +1132,10 @@ def _us_zone(us, prev=None):
                "fmts": {"2": "#,##0.00", "3": PCT, "4": "0.0"},
                "boldCol": 1, "align": {"1": "center"}}]
     left_end = 1 + 2 + max(len(mk), 1)
+    summ = us.get("summary")
+    if summ:   # 세션 요약 (10-22 사용자: 시황 이슈→섹터→종목 뉴스) — 시장표 아래
+        blocks.append({"col": 1, "row": left_end + 1, "rows": [[t] for t in summ]})
+        left_end = left_end + len(summ)
     sb, right_end = _stock_blocks(us["sections"], True, 1,
                                   prev_secs=(prev or {}).get("sections"))
     end = max(left_end, right_end - 1)

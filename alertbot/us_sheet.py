@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -181,6 +182,82 @@ def _reason(sym: str, kr: str, now) -> str:
     return _tr_ko(t), u
 
 
+# 이슈 키워드 사전 — 번역된 한글 뉴스에서 테마 집계 (10-22 사용자: 세션 요약)
+ISSUE_PAT = [
+    ("실적", r"실적|어닝|분기|가이던스|매출|순이익|EPS"),
+    ("AI·반도체", r"\bAI\b|인공지능|데이터센터|반도체|칩|GPU|파운드리"),
+    ("금리·연준", r"금리|연준|국채|인플레|CPI|고용지표|파월"),
+    ("관세·무역", r"관세|무역|수출\s?규제|공급망"),
+    ("M&A·지분", r"인수|합병|지분|사모|상장폐지"),
+    ("규제·소송", r"규제|소송|조사|리콜|벌금"),
+    ("유가·에너지", r"유가|원유|OPEC|감산|천연가스"),
+    ("신약·FDA", r"FDA|임상|승인|신약"),
+]
+
+
+def _summary(market, rows, top, gain):
+    """미국 세션 요약 (10-22 사용자: 시황 이슈 → 주목 섹터 → 개별 종목 뉴스).
+
+    전부 룰 기반 — ①지수·VIX·금리·원자재 조합 한 줄 ②뉴스 키워드 테마 집계
+    ③대금가중 섹터 등락 상·하위 ④대금 상위 중 변동 큰 종목의 뉴스."""
+    g = {m[0]: m for m in market}
+    L = []
+    parts = []
+    spx, ndx = g.get("S&P500"), g.get("나스닥")
+    if spx and spx[2] is not None and ndx and ndx[2] is not None:
+        a, b = spx[2], ndx[2]
+        tone = ("동반 상승" if a > 0 and b > 0
+                else "동반 하락" if a < 0 and b < 0 else "혼조")
+        parts.append(f"S&P {a:+.1f}% · 나스닥 {b:+.1f}% {tone}")
+    vix = g.get("VIX")
+    if vix and vix[1] and (vix[1] >= 22 or abs(vix[2] or 0) >= 7):
+        parts.append(f"VIX {vix[1]:.0f}({(vix[2] or 0):+.0f}%) "
+                     + ("급등 — 불안 확대" if (vix[2] or 0) > 0 else "진정"))
+    tnx = g.get("미국10Y")
+    if tnx and tnx[2] is not None and abs(tnx[2]) >= 0.04:
+        parts.append(f"10Y {tnx[1]:.2f}%({tnx[2]:+.2f}%p) "
+                     + ("금리 부담" if tnx[2] > 0 else "금리 안도"))
+    for lab in ("WTI", "금"):
+        c = g.get(lab)
+        if c and c[2] is not None and abs(c[2]) >= 1.5:
+            parts.append(f"{lab} {c[2]:+.1f}%")
+    if parts:
+        L.append("시황: " + " | ".join(parts))
+    themed = {}
+    for r in {x["sym"]: x for x in top + gain}.values():
+        t = r.get("issue") or ""
+        for nm, pat in ISSUE_PAT:
+            if t and re.search(pat, t, re.I):
+                themed.setdefault(nm, []).append(f"{r['name']} {r['chg']:+.1f}%")
+    iss = sorted(themed.items(), key=lambda kv: -len(kv[1]))[:3]
+    if iss:
+        L.append("주요 이슈: " + "  /  ".join(
+            f"{nm}({len(v)}건: " + " · ".join(v[:3]) + ")" for nm, v in iss))
+    agg = {}
+    for r in rows:
+        a = agg.setdefault(r["sec"] or "기타", [0.0, 0.0])
+        a[0] += r["chg"] * max(r["dvol"], 0.1)
+        a[1] += max(r["dvol"], 0.1)
+    secs = sorted(((s, w / v) for s, (w, v) in agg.items() if v > 0),
+                  key=lambda kv: kv[1])
+
+    def _sec_lab(s, c):
+        reps = sorted([r for r in rows if (r["sec"] or "기타") == s],
+                      key=lambda r: -r["dvol"])[:6]
+        # 섹터 방향과 같은 쪽 대표만 (약세 섹터에 +종목이 뽑히는 역설 방지)
+        reps = sorted(reps, key=lambda r: r["chg"] if c < 0 else -r["chg"])[:2]
+        names = " · ".join(f"{r['name']} {r['chg']:+.1f}" for r in reps)
+        return f"{s} {c:+.1f}%({names})"
+    if len(secs) >= 2:
+        L.append("주목 섹터: 강세 "
+                 + " / ".join(_sec_lab(s, c) for s, c in list(reversed(secs))[:2])
+                 + "   약세 " + " / ".join(_sec_lab(s, c) for s, c in secs[:2]))
+    for r in sorted([r for r in top if r.get("issue") and abs(r["chg"]) >= 2],
+                    key=lambda r: -abs(r["chg"]))[:4]:
+        L.append(f"· {r['name']}({r['chg']:+.1f}%): {r['issue'][:80]}")
+    return (["🌐 미국 세션 요약"] + L) if L else []
+
+
 def collect(now=None) -> dict | None:
     now = now or datetime.now(KST)
     today = now.strftime("%Y%m%d")
@@ -264,7 +341,9 @@ def collect(now=None) -> dict | None:
                  "issue": r.get("issue") or "",
                  "issue_url": r.get("issue_url") or ""} for r in rs]
     rec = {"date": today, "asof": f"{now:%m/%d %H:%M} · 미국 {sess} 세션",
-           "market": market, "sections": [
+           "market": market,
+           "summary": _summary(market, rows, top, gain),
+           "sections": [
                {"title": "거래대금 TOP 15", "rows": pack(top)},
                {"title": "상승률 TOP 15", "rows": pack(gain)}]}
     hist = []
