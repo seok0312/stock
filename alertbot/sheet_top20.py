@@ -276,6 +276,107 @@ def _build_track(base: dict, now, kc):
     return {"base_date": base["date"], "base_slot": base.get("slot"), "rows": rows}
 
 
+def _strategy_picks(today: str) -> dict:
+    """확정 전략 부합 종목 (10-21 사용자: 등급표 아래 '종목:' 자동 기입).
+
+    종목1 = 60일선 위 ∧ 태그1(갭) ∧ 주도주 ∧ 양봉 눌림(pos .5~.8, 8-13 보정)
+    종목2 = 태그3(손바뀜) ∧ 주도주 ∧ 음봉 아님
+    태그는 tag_track 15:40 기록 기준 — 그 전 판(09:10/14:30)엔 '집계 전'."""
+    rows = []
+    try:
+        for l in open(os.path.join(DATA, "tag_picks.jsonl"), encoding="utf-8"):
+            r = json.loads(l)
+            if r.get("date") == today and r.get("band", "hot5") == "hot5":
+                rows.append(r)
+    except FileNotFoundError:
+        pass
+    if not rows:
+        return {"ready": False}
+    above = bool(rows[0].get("above60"))
+    out = {"ready": True, "above60": above, "t1": [], "t1_near": [], "t3": []}
+
+    def candle(code):
+        try:
+            j = requests.get(f"https://m.stock.naver.com/api/stock/{code}/price",
+                             params={"pageSize": 1}, headers=NAVER_UA,
+                             timeout=8).json()[0]
+            o, h, l2, c = [float(str(j[k]).replace(",", ""))
+                           for k in ("openPrice", "highPrice", "lowPrice",
+                                     "closePrice")]
+            pos = (c - l2) / (h - l2) if h > l2 else None
+            return pos, c > o
+        except Exception:
+            return None, None
+
+    for r in rows:
+        tag = r.get("tag")
+        if tag not in ("갭", "손바뀜") or not r.get("leader"):
+            continue
+        pos, bull = candle(r["code"])
+        time.sleep(0.05)
+        item = {"code": r["code"], "name": r["name"], "chg": r["chg"],
+                "buy": r.get("close")}
+        if tag == "갭" and above:
+            if bull and pos is not None and 0.5 <= pos < 0.8:
+                out["t1"].append(item)
+            elif bull is not False:
+                out["t1_near"].append({**item, "pos": pos})
+        elif tag == "손바뀜" and bull is not False:
+            out["t3"].append(item)
+    return out
+
+
+def _eval_yesterday_picks(today: str) -> list:
+    """전일 확정 전략 픽의 실제 성적 — 09:10판 (10-21 사용자).
+    종목1(갭) = 매수가(전일 종가) 대비 '오늘 시가' = 전략 확정 손익.
+    종목2(손바뀜) = 매수가 대비 현재가(보유 중 평가)."""
+    hist = []
+    try:
+        for l in open(STORE, encoding="utf-8"):
+            h = json.loads(l)
+            if h.get("v") == 2 and h.get("slot") != "week" and h["date"] < today:
+                hist.append(h)
+    except FileNotFoundError:
+        return []
+    prev = next((h for h in reversed(hist) if h.get("picks", {}).get("ready")), None)
+    if not prev:
+        return []
+    pk = prev["picks"]
+
+    def quote(code):
+        try:
+            j = requests.get(f"https://m.stock.naver.com/api/stock/{code}/price",
+                             params={"pageSize": 1}, headers=NAVER_UA,
+                             timeout=8).json()[0]
+            return (float(str(j["openPrice"]).replace(",", "")),
+                    float(str(j["closePrice"]).replace(",", "")))
+        except Exception:
+            return None, None
+
+    out = []
+    for key, head, use_open in (("t1", "종목1(갭→시가 매도)", True),
+                                ("t3", "종목2(손바뀜 보유 중)", False)):
+        items = [x for x in pk.get(key) or [] if isinstance(x, dict)]
+        if not items:
+            continue
+        parts = []
+        for x in items:
+            o, c = quote(x["code"])
+            px = o if use_open else c
+            buy = x.get("buy")
+            if px and buy:
+                parts.append(f"{x['name']}({(px / buy - 1) * 100:+.1f}%)")
+            else:
+                parts.append(f"{x['name']}(?)")
+            time.sleep(0.05)
+        out.append(f"{head}: " + " · ".join(parts))
+    if not out and (pk.get("t1") or pk.get("t3")):
+        return []
+    if not out:
+        out = ["전일 픽 없음 (종목1 게이트/무신호)"] if not pk.get("above60") else []
+    return out
+
+
 def _slot_of(hour: int, minute: int) -> str:
     """수집 시각 → 슬롯 버킷. 09:10/14:30/19:00/20:00 크론 ± 수동 실행 흡수."""
     if hour < 12:
@@ -389,6 +490,9 @@ def collect(now=None) -> dict | None:
     # 같은 날 같은 슬롯만 교체, 다른 슬롯은 보존
     slot = _slot_of(now.hour, now.minute)
     rec["slot"] = slot
+    rec["picks"] = _strategy_picks(today)   # 확정 전략 자동 기입 (10-21)
+    if slot == "09:10":
+        rec["yest_eval"] = _eval_yesterday_picks(today)
     hist = []
     try:
         hist = [json.loads(l) for l in open(STORE, encoding="utf-8")]
@@ -992,17 +1096,11 @@ def _us_zone(us, prev=None):
 # 아침 갭 등급표 (검증 8-12·검증리스트 16, 10-20 확정) — 시장 표와 해석 사이 고정.
 # '잠김'은 예측력 최강이나 매수 불가(상따 영역) → 관찰 지표로 분류 (10-20 사용자).
 GAP_GUIDE = [
-    "📌 아침 갭 등급표 (검증 8-12 · 기저율 11.9%)",
-    "관찰: 상한가 잠김(종가=고가) — 59% · 5.0x · 갭 +3.7% | 매수 불가 → 익일 이월 수요 지표",
-    "실행 1순위: 태그1(개+ 외− 기+) — 31% · 2.6x · +1.0% | 종가 매수 → 익일 동시호가 매도",
-    "관찰 2군: +12% 급등 · 2일 누적 +15% · 양봉 눌림 — 갭 확률 2배대지만 매매 기대값 +0.2%(비용 후 본전·승률 48%) → 매수 금지, 태그1 발생 감시 풀",
-    "제외: 과열이어도 음봉 마감 · 급등 없는 돌파 · 전일 하락 — 기저율 수준(엣지 없음)",
-    "게이트: 코스피 60일선 아래 = 갭 플레이 자제 국면(8-7)",
-    "",
-    "✅ 확정 전략 (10-21)",
-    "종목1. 코스피 60일선 위 + 태그1 — 종가 매수 → 익일 동시호가 매도",
-    "종목2. 코스피 무관 + 태그3(손바뀜) — 종가 매수 → D+5 종가 매도",
-    "캔들 보정(10-21): 태그1은 양봉 눌림(.5~.8)이 +1.44%/63%·고가마감은 +0.72%/47% → 눌림 우선 | 태그3는 음봉만 회피(-1.12%)",
+    "📌 아침 갭 등급표 (기저율 11.9%)",
+    "1. 상한가 잠김(종가=고가) = 59% · 5.0x · 갭 +3.7%",
+    "2. 태그1(개+ 외− 기+) = 31% · 2.6x · +1.0% | 익일 동시호가 매도",
+    "게이트: 코스피 60일선 아래 = 갭 플레이 자제",
+    "(범례: % = 익일 아침 상승률 TOP15 진입 확률 · x = 평범한 종목(11.9%) 대비 배수 · 갭 = 익일 시가 평균 상승폭)",
 ]
 
 
@@ -1030,9 +1128,40 @@ def _kr_zone(kr, prev=None):
                "boldCol": 1, "align": {"1": "center"}}]
     left_end = 1 + 2 + max(len(mk), 1)
     if kr.get("slot") != "week":
-        # 등급표(고정) — 시장 표와 해석 사이 (10-20 사용자 배치 지정)
-        blocks.append({"col": 1, "row": 8, "rows": [[t] for t in GAP_GUIDE]})
-        a_row = 8 + len(GAP_GUIDE) + 1
+        # 등급표(고정) + 확정 전략(동적 종목 기입) — 시장 표와 해석 사이
+        pk = kr.get("picks") or {}
+
+        def lab(x):
+            return f"{x['name']}({x['chg']:+.1f}%)" if isinstance(x, dict) else str(x)
+        if not pk.get("ready"):
+            s1 = s3 = "없음 (태그 집계 15:40 이후 표시)"
+        else:
+            if not pk.get("above60"):
+                s1 = "없음 — 60일선 아래 게이트"
+            elif pk.get("t1"):
+                s1 = " · ".join(lab(x) for x in pk["t1"])
+            elif pk.get("t1_near"):
+                s1 = ("조건 완화 후보(눌림 아님): "
+                      + " · ".join(lab(x) for x in pk["t1_near"][:4]))
+            else:
+                s1 = "없음"
+            s3 = (" · ".join(lab(x) for x in pk["t3"])
+                  if pk.get("t3") else "없음")
+        strategy = [
+            "✅ 확정 전략",
+            "1. 코스피 60일선 위 + 태그1 + 양봉 눌림(0.5~0.8) = 종가 매수 → 익일 동시호가 매도",
+            f"종목: {s1}",
+            "2. 코스피 무관 + 태그3(손바뀜) + 음봉 회피 = 종가 매수 → D+5 종가 매도",
+            f"종목: {s3}",
+        ]
+        ev = kr.get("yest_eval")
+        if ev:
+            strategy.append("")
+            strategy.append("📊 전일 전략 성적 (10-21 사용자: 09:10 자동 채점)")
+            strategy += ev
+        lines = GAP_GUIDE + [""] + strategy
+        blocks.append({"col": 1, "row": 8, "rows": [[t] for t in lines]})
+        a_row = 8 + len(lines) + 1
         anal = _analysis_rows(kr, prev)       # 해석 블록 — 등급표 아래
         if anal:
             blocks.append({"col": 1, "row": a_row, "rows": [[t] for t in anal]})
