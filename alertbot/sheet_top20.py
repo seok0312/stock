@@ -356,7 +356,26 @@ def _eval_yesterday_picks(today: str) -> list:
     pk = prev["picks"]
 
     def quote(code):
+        """오늘 시세 — 시가는 반드시 KRX 09:00 동시호가(키움 ka10086, bare=KRX 전용).
+
+        라이브 네이버 일봉의 openPrice 는 NXT 프리마켓 포함 '통합 시가'라
+        동시호가 매도 채점이 어긋난다(10-21 검증, 삼성전자 216,000 vs 217,000).
+        R(전일 정규 종가) = 현재가 − 전일비 복원."""
         try:
+            import kr_sectors as krs
+            d, _ = krs._kc().request("ka10086", {"stk_cd": code, "qry_dt": today,
+                                                 "indc_tp": "0"},
+                                     endpoint="/api/dostk/mrkcond")
+            key = next((k for k in d if isinstance(d[k], list)), None)
+            r = (d.get(key) or [{}])[0]
+            cur, pred = _num(r.get("close_pric")), _num(r.get("pred_rt"))
+            o = _num(r.get("open_pric"))
+            if r.get("date") == today and cur and pred is not None:
+                return {"dt": today, "o": abs(o) if o else None,
+                        "c": abs(cur), "R": abs(cur) - pred}
+        except Exception:
+            pass
+        try:    # 폴백: 네이버 (라이브 시가가 통합 기준일 수 있음 — 차선)
             j = requests.get(f"https://m.stock.naver.com/api/stock/{code}/price",
                              params={"pageSize": 1}, headers=NAVER_UA,
                              timeout=8).json()[0]
