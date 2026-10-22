@@ -210,32 +210,72 @@ def _prev_trading_rec(hist, today: str):
     return slots.get("20:00") or slots[max(slots)]
 
 
-def _build_track(base: dict, now, kc, cur_map=None, al=False):
+def _prev_trading_bases(hist, today: str) -> list:
+    """전 거래일 기준판 목록 — 15:40판(종가 확정)과 20:00판 둘 다(있는 것만,
+    15:40 먼저). 둘 다 없으면 그 날 마지막 슬롯 하나.
+    (10-22 사용자: 아침 추적 대상을 '20:00 TOP' → '15:30 ∪ 20:00 TOP' 으로 확대 —
+    저녁 세션 순위 변동으로 20:00판에서 빠진 종가 기준 주도주도 추적.)"""
+    days: dict = {}
+    for h in hist:
+        if h.get("v") == 2 and h.get("slot") not in (None, "week") \
+                and h.get("date", "") < today:
+            days.setdefault(h["date"], {})[h["slot"]] = h
+    if not days:
+        return []
+    slots = days[max(days)]
+    out = [slots[s] for s in ("15:40", "20:00") if s in slots]
+    return out or [slots[max(slots)]]
+
+
+def _build_track(bases, now, kc, cur_map=None, al=False):
     """전일 대금·상승률 TOP 합집합 → 현재 등락률순 추적 리스트 + 거래원 원장
     (10-20 사용자: ① 상승/하락 빨·파 채우기 ② 상승률순 리스트 ③ 거래원별 수급
     기록 — 분석용). 등락률·거래원은 ka10002 한 콜, 키움 실패 시 네이버 폴백.
     cur_map(10-21): 같은 수집의 ka10032 통합(KRX+NXT) 등락률 {code: chg} —
     ka10002 는 KRX 단독가라 대금 표와 0.1~0.8%p 어긋나던 것을 통일.
     al(10-22): 08:10 프리마켓판 — ka10002 에 _AL(통합) 접미사로 NXT 프리마켓
-    등락을 조회(KRX 단독은 개장 전 0%). 거래원 원장은 09:10판만 기록."""
+    등락을 조회(KRX 단독은 개장 전 0%). 거래원 원장은 09:10판만 기록.
+    bases(10-22 사용자): 전일 15:40판 + 20:00판 레코드 목록 — 두 판 TOP 합집합.
+    '전일 등락률'은 15:40판(공식 종가) 우선, '20:00比'는 20:00판 가격 대비 오늘
+    변동(저녁에 뜬 종목이 아침에 유지됐는지), '선정'은 어느 판 TOP 이었는지."""
+    if isinstance(bases, dict):
+        bases = [bases]
     today = now.strftime("%Y%m%d")
+    lab = {"15:40": "15:30", "20:00": "20:00"}
+    r1540 = next((b for b in bases if b.get("slot") == "15:40"), None)
+    r2000 = next((b for b in bases if b.get("slot") == "20:00"), None)
+
+    def _amt_chg(rec):            # amt100 5번째 필드(10-22) → {code: chg}
+        return {r[0]: r[4] for r in (rec or {}).get("amt100") or []
+                if len(r) >= 5 and r[4] is not None}
+    close_chg, eve_chg = _amt_chg(r1540), _amt_chg(r2000)
     rows, seen = [], {}
-    for si, s in enumerate((base.get("sections") or [])[:2]):
-        tag = "대금" if si == 0 else "상승률"
-        for x in s.get("rows") or []:
-            code = x.get("code")
-            if not code:
-                continue
-            if code in seen:
-                seen[code]["src"] += "·" + tag
-                continue
-            r = {"code": code, "name": x["name"], "mkt": x["mkt"],
-                 "sec": x.get("sec") or "", "src": tag, "chg": None,
-                 "amt_prev": x.get("amt_eok"), "chg_prev": x.get("chg"),
-                 "issue": x.get("issue") or "", "issue_url": x.get("issue_url") or "",
-                 "flow": x.get("flow")}
-            seen[code] = r
-            rows.append(r)
+    for b in bases:
+        sl = lab.get(b.get("slot"), b.get("slot") or "")
+        for si, s in enumerate((b.get("sections") or [])[:2]):
+            tag = "대금" if si == 0 else "상승률"
+            for x in s.get("rows") or []:
+                code = x.get("code")
+                if not code:
+                    continue
+                if code in seen:
+                    r = seen[code]
+                    if tag not in r["src"]:
+                        r["src"] += "·" + tag
+                    if sl not in r["sel"]:
+                        r["sel"].append(sl)
+                    if b is r2000 and r.get("chg_2000") is None:
+                        r["chg_2000"] = x.get("chg")   # 15:40 선등록 종목의 20:00 가격
+                    continue
+                r = {"code": code, "name": x["name"], "mkt": x["mkt"],
+                     "sec": x.get("sec") or "", "src": tag, "sel": [sl], "chg": None,
+                     "amt_prev": x.get("amt_eok"),
+                     "chg_prev": close_chg.get(code, x.get("chg")),
+                     "chg_2000": eve_chg.get(code, x.get("chg") if b is r2000 else None),
+                     "issue": x.get("issue") or "", "issue_url": x.get("issue_url") or "",
+                     "flow": x.get("flow")}
+                seen[code] = r
+                rows.append(r)
     logs = []
     fails = 0
     for r in rows:
@@ -265,7 +305,7 @@ def _build_track(base: dict, now, kc, cur_map=None, al=False):
                 pass
         if d and not al:                    # 거래원 원장은 09:10판만 (10-22)
             logs.append({"date": today, "asof": now.strftime("%m/%d %H:%M"),
-                         "slot": "09:10", "base_date": base["date"],
+                         "slot": "09:10", "base_date": bases[0]["date"],
                          "code": r["code"], "name": r["name"], "src": r["src"],
                          "chg": r["chg"],
                          "prev": {"amt_eok": r["amt_prev"], "chg": r["chg_prev"],
@@ -291,8 +331,16 @@ def _build_track(base: dict, now, kc, cur_map=None, al=False):
                 f.write(json.dumps(x, ensure_ascii=False) + "\n")
         os.replace(tmp, BROKER_LOG)
         print(f"[top20] 거래원 기록 {len(logs)}종목 → broker_log.jsonl")
+    for r in rows:                      # 20:00 가격 대비 오늘 변동 + 선정 라벨 확정
+        c2 = r.get("chg_2000")
+        if r["chg"] is not None and c2 is not None:
+            r["vs2000"] = round(((1 + r["chg"] / 100) / (1 + c2 / 100) - 1) * 100, 2)
+        r["sel"] = "·".join(r["sel"])
     rows.sort(key=lambda r: (r["chg"] is None, -(r["chg"] or 0)))
-    return {"base_date": base["date"], "base_slot": base.get("slot"), "rows": rows}
+    return {"base_date": bases[0]["date"],
+            "base_slot": "+".join(lab.get(b.get("slot"), b.get("slot") or "")
+                                  for b in bases),
+            "rows": rows}
 
 
 def _strategy_picks(today: str, cur_map=None) -> dict:
@@ -578,15 +626,15 @@ def collect(now=None) -> dict | None:
                         x["eve"] = round(((1 + x["chg"] / 100)
                                           / (1 + c0 / 100) - 1) * 100, 1)
     if slot in ("08:10", "09:10"):         # 전일 TOP 추적 (10-20, 10-22: 08:10 추가)
-        base = _prev_trading_rec(hist, today)
-        if base:
+        bases = _prev_trading_bases(hist, today)   # 15:40 ∪ 20:00 (10-22 사용자)
+        if bases:
             try:
                 rec["track"] = _build_track(
-                    base, now, kc,
+                    bases, now, kc,
                     cur_map={c: v["chg"] for c, v in amt_rows.items()},
                     al=(slot == "08:10"))   # 프리마켓은 통합(_AL)가로 등락 조회
-                print(f"[top20] 전일({base['date']} {base.get('slot')}판) TOP 추적 "
-                      f"{len(rec['track']['rows'])}종목")
+                print(f"[top20] 전일({bases[0]['date']} {rec['track']['base_slot']}판) "
+                      f"TOP 추적 {len(rec['track']['rows'])}종목")
             except Exception as e:
                 print(f"[top20] 전일 추적 실패(계속): {type(e).__name__}: {e}")
     hist = [h for h in hist if not (h["date"] == today and h["slot"] == slot)] + [rec]
@@ -801,7 +849,8 @@ PCT = "[Red]+0.0%;[Blue]-0.0%;0.0%"
 NET = "+#,##0;-#,##0;0"
 WIDTHS = {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85, "6": 85, "7": 85,
           "8": 30, "9": 140, "10": 75, "11": 110, "12": 90, "13": 100,
-          "14": 430, "15": 430, "16": 85, "17": 85, "18": 85, "19": 85}
+          "14": 430, "15": 430, "16": 85, "17": 85, "18": 85, "19": 85,
+          "20": 85, "21": 95}        # 추적 표 '20:00比'·'선정' (10-22)
 
 
 RANK_UP_BG = "#f8d0cd"     # 순위 상승·신규 진입 (연빨강)
@@ -1141,19 +1190,23 @@ def _track_block(tr: dict, r0: int):
                     (x.get("chg_prev") / 100 if x.get("chg_prev") is not None else None),
                     (x.get("flow") or {}).get("p"),
                     (x.get("flow") or {}).get("f"),
-                    (x.get("flow") or {}).get("i")])
+                    (x.get("flow") or {}).get("i"),
+                    (x.get("vs2000") / 100 if x.get("vs2000") is not None else None),
+                    x.get("sel") or ""])
         bgs.append(RANK_UP_BG if (chg or 0) > 0
                    else RANK_DN_BG if (chg or 0) < 0 else None)
     blk = {"title": (f"🔁 전일({_date_lab(tr['base_date'])} {tr.get('base_slot', '')}판) "
-                     f"대금·상승률 TOP{TOP_N} 추적 — 현재 등락률순"),
+                     f"대금·상승률 TOP{TOP_N} 추적 — 현재 등락률순 "
+                     f"(등락률=전일 15:30 종가 대비 · 20:00比=전일 20:00 가격 대비)"),
            "col": 9, "row": r0,
            "headers": ["종목", "시장", "섹터", "등락률", "전일 대금(억)", "전일 이유",
                        "링크", "전일 등락률", "전일 개인(억)", "전일 외국인(억)",
-                       "전일 기관(억)"],
+                       "전일 기관(억)", "20:00比", "선정"],
            "rows": rws,
            "fmts": {"4": PCT, "5": "#,##0", "8": PCT,
-                    "9": NET, "10": NET, "11": NET},
-           "align": {"1": "center", "2": "center", "3": "center", "7": "left"}}
+                    "9": NET, "10": NET, "11": NET, "12": PCT},
+           "align": {"1": "center", "2": "center", "3": "center", "7": "left",
+                     "13": "center"}}
     if any(bgs):
         blk["bg1"] = bgs
     return blk, r0 + 2 + max(len(rws), 1) + 1
@@ -1177,7 +1230,7 @@ def _us_zone(us, prev=None):
                                   prev_secs=(prev or {}).get("sections"))
     end = max(left_end, right_end - 1)
     blocks += sb
-    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 19], "bg": "#000000"})
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 21], "bg": "#000000"})
     return blocks, end + 2
 
 
@@ -1268,7 +1321,7 @@ def _kr_zone(kr, prev=None):
         sb.append(tb)
     end = max(left_end, right_end - 1)
     blocks += sb
-    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 19], "bg": "#000000"})
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 21], "bg": "#000000"})
     return blocks, end + 2
 
 
@@ -1285,7 +1338,7 @@ def _us_week_zone(usw):
     sb, right_end = _stock_blocks(usw["sections"], True, 1)
     end = max(left_end, right_end - 1)
     blocks += sb
-    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 19], "bg": "#000000"})
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 21], "bg": "#000000"})
     return blocks, end + 2
 
 
