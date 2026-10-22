@@ -165,6 +165,49 @@ def _us_earn_actual(sym: str, now):
         return None
 
 
+def _us_earn_announced(sym: str, when, kr_name: str = "") -> bool:
+    """발표가 '실제로 있었는지' 판별 (10-22: META 실발표를 earningsHistory 지연
+    때문에 미발표로 오판 → 보류 가드가 침묵시킬 뻔한 결함 보완).
+
+    ① 야후 calendarEvents.earningsDate 가 이벤트 당일(미국 기준 = KST−1일)과
+    일치하면 발표로 간주 — META 사례에서 수치는 없어도 날짜는 즉시 정확했음.
+    ② 폴백: 한글 뉴스 풀에 직후 '실적/어닝' 기사가 있으면 발표."""
+    import requests
+    try:
+        s = requests.Session()
+        s.headers["User-Agent"] = UA_STR
+        try:
+            s.get("https://fc.yahoo.com", timeout=8)
+        except requests.RequestException:
+            pass
+        crumb = s.get("https://query1.finance.yahoo.com/v1/test/getcrumb",
+                      timeout=8).text.strip()
+        j = s.get(f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}",
+                  params={"modules": "calendarEvents", "crumb": crumb},
+                  timeout=10).json()
+        ds = {d.get("fmt") for d in
+              (((((j.get("quoteSummary") or {}).get("result") or [{}])[0]
+                 .get("calendarEvents") or {}).get("earnings") or {})
+               .get("earningsDate") or [])}
+        want = {when.strftime("%Y-%m-%d"),
+                (when - timedelta(days=1)).strftime("%Y-%m-%d")}
+        if ds & want:
+            return True
+    except Exception:
+        pass
+    if kr_name:
+        try:
+            import news
+            hits = news._pool_match(keywords=(kr_name,), tickers=(sym,), limit=10,
+                                    start=when - timedelta(hours=2),
+                                    end=when + timedelta(hours=10))
+            if any(("실적" in h["title"] or "어닝" in h["title"]) for h in hits):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def run(now=None, dry_run=False) -> int:
     now = now or datetime.now(KST)
     today = now.strftime("%Y%m%d")
@@ -228,12 +271,24 @@ def run(now=None, dry_run=False) -> int:
             if got is None and m and age_min < US_EARN_WAIT_MIN:
                 continue                 # 야후 신규 분기 행 대기 — 마킹 안 함
             if got is None and "잠정일" in (it.get("val") or ""):
-                # 잠정일 추정 + 3시간 내 실제치 無 = 발표 자체가 없었을 공산
-                # (10-22 META 오탐: 실제는 10/28 추정) — 발표완료 단정 금지
-                state[key] = (f"{now.isoformat(timespec='seconds')} "
-                              "(잠정일-실제치 미확인, 알림 보류)")
-                print(f"[watch] 보류(잠정일 미확인): {it['name']}")
-                continue
+                # 잠정일 + 실제치 無: '발표 자체가 없었는지' 먼저 판별 (10-22:
+                # META 는 실발표였는데 야후 수치만 12시간+ 지연 — 단순 보류는 침묵 오류)
+                kr_nm = ""
+                try:
+                    import movers
+                    kr_nm = next((kr for sym2, kr, _ in movers.US_UNIV
+                                  if sym2 == m.group(1)), "")
+                except Exception:
+                    pass
+                if m and _us_earn_announced(m.group(1), when, kr_nm):
+                    lines = (esc(it.get("val") or "")
+                             + " · <b>발표 확인</b> — 실제 수치 반영 지연(야후), "
+                               "아침 브리핑에서 재조회").strip(" ·")
+                else:
+                    state[key] = (f"{now.isoformat(timespec='seconds')} "
+                                  "(잠정일-발표 확인 안 됨, 알림 보류)")
+                    print(f"[watch] 보류(잠정일 미확인): {it['name']}")
+                    continue
             if got:
                 a, e, sp = got
                 body = [f"EPS 실제 <b>${a:g}</b>"]
@@ -313,6 +368,19 @@ def digest(now=None, dry_run=False) -> bool:
             sv = state.get(f"{dk}|{it['t']}|{it['name']}")
             extra = ((sv.get("line") or "").split("\n")[0]
                      if isinstance(sv, dict) else "")
+            if (it.get("type") == "실적" and "🇺🇸" in it["name"]
+                    and "실제" not in extra):
+                # 야후 수치 지연분 재조회 — 알림 땐 없던 실제치가 아침엔 반영됨 (10-22)
+                m2 = re.match(r"([A-Z]{1,5})\b",
+                              re.sub(r"^[^\w가-힣]+", "", it["name"]).strip())
+                got = _us_earn_actual(m2.group(1), now) if m2 else None
+                if got:
+                    a, e, sp = got
+                    extra = (f"EPS 실제 <b>${a:g}</b>"
+                             + (f" · 예상 ${e:.2f}" if e is not None else "")
+                             + (" · <b>" + f"{abs(sp) * 100:.0f}% "
+                                + ("상회" if sp >= 0 else "하회") + "</b>"
+                                if sp is not None else ""))
             if not extra and it.get("val"):      # 실제치 미보존 — 예정 문구 폴백
                 extra = esc(it["val"])
             L.append(f"  · {w:%H:%M} {esc(it['name'])}"
