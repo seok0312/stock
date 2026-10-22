@@ -448,6 +448,8 @@ KR_EARN_EXACT = {
     # 10-22 사용자 지적으로 확인: 패턴(4번째 목요일=10/22)이 틀림 — 10/14 공시
     # 콘콜 일정 10/28(수) 09:00 (stockplus newsroom 39522, 뉴시스).
     ("SK하이닉스", "2026Q3"): "202610280900",
+    # 삼성전자 확정실적 콘콜 — 공식 IR 페이지 (10-22 사용자: 발표예정 누락 지적)
+    ("삼성전자확정", "2026Q3"): "202610291000",
 }
 
 
@@ -471,10 +473,16 @@ def _kr_earnings(start: datetime, end: datetime) -> list:
             # SK하이닉스: 4번째 목요일
             first = datetime(y, m, 1, 9, 0, tzinfo=KST)
             hyx = first + timedelta(days=(3 - first.weekday()) % 7 + 21)
-            for comp, when, est_note in (
-                    ("삼성전자", d, "잠정실적 공시(개장 전)"),
-                    ("SK하이닉스", hyx, "실적 발표·콘퍼런스콜")):
-                ex = KR_EARN_EXACT.get((comp, qkey))
+            # 삼성전자 확정실적 콘콜: 그 달 마지막 목요일 10:00 근사
+            # (10-22 사용자: 발표예정에 누락 — 잠정과 별개 이벤트로 추가)
+            import calendar as _cal
+            eom = datetime(y, m, _cal.monthrange(y, m)[1], 10, 0, tzinfo=KST)
+            sx = eom - timedelta(days=(eom.weekday() - 3) % 7)
+            for ckey, comp, when, est_note in (
+                    ("삼성전자", "삼성전자", d, "잠정실적 공시(개장 전)"),
+                    ("삼성전자확정", "삼성전자", sx, "확정실적 발표·콘퍼런스콜"),
+                    ("SK하이닉스", "SK하이닉스", hyx, "실적 발표·콘퍼런스콜")):
+                ex = KR_EARN_EXACT.get((ckey, qkey))
                 tent = ""
                 if ex:
                     when = datetime.strptime(ex, "%Y%m%d%H%M").replace(tzinfo=KST)
@@ -482,7 +490,9 @@ def _kr_earnings(start: datetime, end: datetime) -> list:
                     tent = " ·잠정일"
                 if not (start <= when <= end):
                     continue
-                nm = f"{comp} {lab} " + ("잠정실적" if comp == "삼성전자" else "실적")
+                nm = f"{comp} {lab} " + ("잠정실적" if ckey == "삼성전자"
+                                         else "확정실적" if ckey == "삼성전자확정"
+                                         else "실적")
                 out.append({"when": when, "country": "KR", "name": nm, "name_kr": nm,
                             "actual": None, "consensus": None, "previous": None,
                             "unit": None, "vol": "HIGH", "dev": None, "better": None,
