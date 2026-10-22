@@ -156,20 +156,27 @@ def _reason(name: str, code: str, news_mod, now, n_start, tmap) -> str:
     return (("테마: " + "·".join(ths)) if ths else ""), ""
 
 
-def _market_summary():
+def _market_summary(premarket=False):
     """시장 요약 — [라벨, 지수, 등락률%, 거래대금(조), 개인(억), 외국인(억), 기관(억)].
     수급·거래대금 = flows(네이버 투자자 동향, 20시엔 당일 확정), 지수·등락률 =
-    네이버 지수 API 마감치(flows 의 close 는 시점 어긋날 수 있어 안 씀)."""
+    네이버 지수 API 마감치(flows 의 close 는 시점 어긋날 수 있어 안 씀).
+
+    premarket(08:10판, 10-22 사용자): 장 시작(09:00) 전엔 flows·지수 API 가
+    당일 데이터가 없어 전일 확정치를 그대로 돌려준다(특히 선물 대금·수급은
+    프리마켓에 미갱신 → 어제값 고정). 그래서 거래대금·투자자 수급·등락률을
+    모두 비우고 지수는 '전일 종가' 참고값만 둔다(가짜 당일치 표기 금지)."""
     import flows
-    try:
-        fl = flows.fetch_all()
+    by = {}
+    if not premarket:
         try:
-            flows.apply_kiwoom(fl)      # KRX+NXT 통합 (10-19: 네이버는 KRX 단독이라
-        except Exception:               # 외인 등 수급이 크게 어긋남 — 브리핑과 동일 소스)
-            pass
-        by = {r["code"]: r for r in fl.get("rows") or []}
-    except Exception:
-        by = {}
+            fl = flows.fetch_all()
+            try:
+                flows.apply_kiwoom(fl)  # KRX+NXT 통합 (10-19: 네이버는 KRX 단독이라
+            except Exception:           # 외인 등 수급이 크게 어긋남 — 브리핑과 동일 소스)
+                pass
+            by = {r["code"]: r for r in fl.get("rows") or []}
+        except Exception:
+            by = {}
     out = []
     for code, lab in (("KOSPI", "코스피"), ("KOSDAQ", "코스닥"), ("FUT", "선물")):
         r = by.get(code) or {}
@@ -180,6 +187,9 @@ def _market_summary():
             idx, chg = _num(j[0].get("closePrice")), _num(j[0].get("fluctuationsRatio"))
         except Exception:
             idx = r.get("close")
+        if premarket:                   # 장전: 대금·수급·등락 미집계 (지수=전일 종가)
+            out.append([lab + " (전일)", idx, None, None, None, None, None])
+            continue
         f = r.get("flow_eok") or {}
         amt = r.get("amount_won")
         out.append([lab, idx, chg, round(amt / 1e12, 2) if amt else None,
@@ -526,17 +536,16 @@ def collect(now=None) -> dict | None:
     amt200 = [[r["code"], r["name"], r["mkt"], r["amt_eok"], r.get("chg")]
               for r in sorted(amt_rows.values(), key=lambda x: -x["amt_eok"])[:200]]
               # 5번째 chg(10-22): 15:40판 = 종가 기준가 → 저녁판 괄호 변동률 분모
+    # 슬롯 스냅샷 (10-16 사용자: 14:30/19/20 버전을 지우지 않고 적층) —
+    # 같은 날 같은 슬롯만 교체, 다른 슬롯은 보존
+    slot = _slot_of(now.hour, now.minute)
     rec = {"date": today, "asof": now.strftime("%m/%d %H:%M"), "v": 2,
-           "amt100": amt200,
-           "market": _market_summary(), "sections": [
+           "amt100": amt200, "slot": slot,
+           "market": _market_summary(premarket=slot == "08:10"), "sections": [
         {"title": f"거래대금 TOP {TOP_N}", "rows": pack(top)},
         {"title": "상승률 TOP 15 (거래대금 상위 100위)", "rows": pack(gain)},
         {"title": "상한가", "rows": pack(lim)},
     ]}
-    # 슬롯 스냅샷 (10-16 사용자: 14:30/19/20 버전을 지우지 않고 적층) —
-    # 같은 날 같은 슬롯만 교체, 다른 슬롯은 보존
-    slot = _slot_of(now.hour, now.minute)
-    rec["slot"] = slot
     rec["picks"] = _strategy_picks(
         today, cur_map={c: abs(v["cur"]) for c, v in amt_rows.items()
                         if v.get("cur")})   # 확정 전략 + 수집 시점 실행가 (10-21)
@@ -1189,7 +1198,9 @@ def _kr_zone(kr, prev=None):
     아래부터 US→14:30→19→20)."""
     mk = [[m[0], m[1], (m[2] / 100 if m[2] is not None else None),
            m[3], m[4], m[5], m[6]] for m in kr.get("market") or []]
-    if mk:   # 시장 전체 합계 (10-19 사용자): 대금·개인/외인/기관 — 코스피+코스닥+선물
+    # 시장 전체 합계 (10-19 사용자): 대금·개인/외인/기관 — 코스피+코스닥+선물.
+    # 08:10 프리마켓은 대금·수급이 비어 있어 합계 생략 (10-22)
+    if mk and any(r[3] is not None or r[4] is not None for r in mk):
         mk = mk + [["합계", "", "",
                     round(sum(r[3] or 0 for r in mk), 1),
                     sum(r[4] or 0 for r in mk),
