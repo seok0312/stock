@@ -1367,6 +1367,10 @@ def _post(payload):
 def push_all() -> int:
     """존 단위 삽입 푸시 (10-16 사용자: 시간대 적층 + 수동 수정 보존).
 
+    탭 분리(10-23 사용자): 국내 존 → "M월", 미국 일일·주간 존 → "M월 (미국)".
+    없는 탭은 Apps Script insert_or_create 가 자동 생성. 10-22 이전 미국 존은
+    "10월" 탭에 남아 있음(웹훅에 삭제 모드 없음 — 수동 삭제 가능).
+
     탭을 지우지 않는다. 미국 존은 하루 1회 생성(1행~), 국내 존은 새 슬롯마다
     '미국 존 바로 아래'에 행 삽입 — 기존 존(사용자가 고친 셀 포함)은 그대로
     아래로 밀린다. 같은 슬롯 재수집은 재전송하지 않아 수동 수정을 덮지 않는다.
@@ -1425,24 +1429,26 @@ def push_all() -> int:
                             reversed([x for x in dates_sorted
                                       if x < date and x in us_hist])), None)
             blocks, h = _us_zone(us, prev_us)
-            got = _post({"token": token, "date": d_lab, "mode": "insert_or_create",
+            got = _post({"token": token, "date": d_lab + " (미국)",   # 미국 전용 탭 (10-23)
+                         "mode": "insert_or_create",
                          "at": 1, "n": h + 1, "widths": WIDTHS, "blocks": blocks})
             if got:
                 st["us"] = True
                 n += 1
-                print(f"[sheet] {d_lab} 미국 존 기록")
+                print(f"[sheet] {d_lab} (미국) 탭 — 미국 존 기록")
             else:
                 state[date] = st
                 break
         usw = us_week.get(date)
         if usw and "usweek" not in st["slots"]:
             blocks, h = _us_week_zone(usw)
-            got = _post({"token": token, "date": d_lab, "mode": "insert_or_create",
+            got = _post({"token": token, "date": d_lab + " (미국)",   # 미국 전용 탭 (10-23)
+                         "mode": "insert_or_create",
                          "at": 1, "n": h + 1, "widths": WIDTHS, "blocks": blocks})
             if got:
                 st["slots"].append("usweek")
                 n += 1
-                print(f"[sheet] {d_lab} 미국 주간 존 기록")
+                print(f"[sheet] {d_lab} (미국) 탭 — 미국 주간 존 기록")
             else:
                 state[date] = st
                 break
