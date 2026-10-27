@@ -611,8 +611,22 @@ def collect(now=None) -> dict | None:
                 h["slot"] = _slot_of(hh, mm)
             except Exception:
                 h["slot"] = "20:00"
+    if slot in ("08:10", "09:10", "14:30"):
+        # '20:00比' 열(10-28 사용자): 전일 20:00판 가격 대비 오늘 변동 — 저녁에 뜬
+        # 종목이 유지됐는지. 기준 = 전 거래일 20:00판 amt100 의 chg(5번째 필드).
+        b2000 = next((h for h in reversed(hist)
+                      if h.get("date", "") < today and h.get("slot") == "20:00"), None)
+        emap = {r[0]: r[4] for r in (b2000 or {}).get("amt100") or []
+                if len(r) >= 5 and r[4] is not None}
+        if emap:
+            for s in rec["sections"]:
+                for x in s["rows"]:
+                    c0 = emap.get(x.get("code"))
+                    if c0 is not None and x.get("chg") is not None:
+                        x["vs2000"] = round(((1 + x["chg"] / 100)
+                                             / (1 + c0 / 100) - 1) * 100, 2)
     if slot in ("19:00", "20:00"):
-        # 저녁판 등락률 옆 괄호 = 15:30 종가 대비 변동 (10-22 사용자: "+2.5% (-0.5%)").
+        # '종가比' 열(10-22 괄호 → 10-28 별도 열): 당일 15:30 종가 대비 변동.
         # 기준가 = 같은 날 15:40판(장후 시간외종가거래 중 = 종가 고정가) amt100 의 chg.
         b1540 = next((h for h in reversed(hist)
                       if h.get("date") == today and h.get("slot") == "15:40"), None)
@@ -847,10 +861,15 @@ def _build_week(now, hist, kc):
 
 PCT = "[Red]+0.0%;[Blue]-0.0%;0.0%"
 NET = "+#,##0;-#,##0;0"
-WIDTHS = {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85, "6": 85, "7": 85,
-          "8": 30, "9": 140, "10": 75, "11": 110, "12": 90, "13": 100,
-          "14": 430, "15": 430, "16": 85, "17": 85, "18": 85, "19": 85,
-          "20": 85, "21": 95}        # 추적 표 '20:00比'·'선정' (10-22)
+# 열 폭 — 국내 탭 (10-28: '#' 순번 열 + 기준가比 열로 종목 표 전체가 우측 이동).
+# col 9~: #·종목·시장·섹터·등락률·종가比/20:00比·대금·이유·링크·개인·외인·기관
+#          (추적 표: …·링크·전일등락률·개인·외인·기관·선정판 → 22열까지)
+WIDTHS = {"1": 80, "2": 80, "3": 80, "4": 95, "5": 85, "6": 85, "7": 85, "8": 30,
+          "9": 35, "10": 140, "11": 75, "12": 110, "13": 90, "14": 85, "15": 100,
+          "16": 430, "17": 430, "18": 85, "19": 85, "20": 85, "21": 85, "22": 95}
+# 미국 탭: #·종목·시장·섹터·등락률·거래대금($B)·이유·링크 (탭 분리로 폭 독립, 10-28)
+WIDTHS_US = {**{str(k): WIDTHS[str(k)] for k in range(1, 14)},
+             "14": 100, "15": 430, "16": 430}
 
 
 RANK_UP_BG = "#f8d0cd"     # 순위 상승·신규 진입 (연빨강)
@@ -874,48 +893,53 @@ def _rank_bg(rows, prev_rows):
     return out if any(out) else None
 
 
-def _stock_blocks(secs, us_mode, r0, with_flow=False, prev_secs=None):
+def _stock_blocks(secs, us_mode, r0, with_flow=False, prev_secs=None, slot=None):
     """종목 표들(col 9) — (blocks, 끝다음행).
-    with_flow: 주간 서머리만 True — 일일 표의 종목별 수급 열은 삭제(10-17),
-    주간 '한 주간 수급'은 사용자 명시 요구라 유지."""
+    with_flow: 국내 일일·주간 표(종목별 수급 열 포함), us_mode: 미국 표.
+    10-28 사용자: ① 맨 왼쪽 '#' 순번 열(순위 변동 색칠 bg1 은 이 칸에 칠해짐)
+    ② 국내 일일 표는 등락률 오른쪽에 기준가 대비 열 — 15:40/19/20판 '종가比'
+    (당일 15:30 종가 대비, 15:40판 amt100 기준) / 08:10/09:10/14:30판 '20:00比'
+    (전일 20:00 가격 대비). 주간 표는 같은 자리에 빈 열(열 폭 정렬용).
+    (10-22 의 괄호 문자열 방식은 폐지 — 등락률 셀의 빨강/파랑 서식 복원.)"""
     blocks, r = [], r0
+    eve_slots = ("15:40", "19:00", "20:00")
+    dcol = ("종가比" if slot in eve_slots
+            else "20:00比" if slot in ("08:10", "09:10", "14:30") else "")
+    dkey = "eve" if slot in eve_slots else "vs2000"
+
+    def _pct(v):
+        return v / 100 if v is not None else None
     for si, s in enumerate(secs):
         def _lnk(x):
             # URL 원문 그대로 (10-19 사용자: 아이콘 대신 주소 노출) — 시트가
             # 자동으로 링크화한다.
             return x.get("issue_url") or ""
         if us_mode:
-            hd = ["종목", "시장", "섹터", "등락률", "거래대금($B)", "이유", "링크"]
-            rws = [[x["name"], "미국", x["sec"], x["chg"] / 100, x["dvol"],
-                    x["issue"], _lnk(x)] for x in s["rows"]]
-            fm = {"4": PCT, "5": "0.0"}
+            hd = ["#", "종목", "시장", "섹터", "등락률", "거래대금($B)", "이유", "링크"]
+            rws = [[i + 1, x["name"], "미국", x["sec"], _pct(x["chg"]), x["dvol"],
+                    x["issue"], _lnk(x)] for i, x in enumerate(s["rows"])]
+            fm = {"5": PCT, "6": "0.0"}
+            al = {"1": "center", "2": "center", "3": "center", "4": "center", "8": "left"}
         elif with_flow:
-            hd = ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유", "링크",
+            hd = ["#", "종목", "시장", "섹터", "등락률", dcol, "거래대금(억)", "이유", "링크",
                   "개인(억)", "외국인(억)", "기관(억)"]
-
-            def _chg_cell(x):
-                # 저녁판: "+2.5% (-0.5%)" — 괄호 = 15:30 종가 대비 (10-22 사용자).
-                # 문자열 셀이라 빨강/파랑 숫자서식은 빠진다(정보 우선).
-                if x.get("eve") is not None and x.get("chg") is not None:
-                    return f"{x['chg']:+.1f}% ({x['eve']:+.1f}%)"
-                return x["chg"] / 100 if x.get("chg") is not None else None
-            rws = [[x["name"], x["mkt"], x.get("sec") or "", _chg_cell(x),
+            rws = [[i + 1, x["name"], x["mkt"], x.get("sec") or "", _pct(x.get("chg")),
+                    _pct(x.get(dkey)) if dcol else None,
                     x["amt_eok"], x["issue"], _lnk(x),
                     (x.get("flow") or {}).get("p"),
                     (x.get("flow") or {}).get("f"),
-                    (x.get("flow") or {}).get("i")] for x in s["rows"]]
-            fm = {"4": PCT, "5": "#,##0", "8": NET, "9": NET, "10": NET}
+                    (x.get("flow") or {}).get("i")] for i, x in enumerate(s["rows"])]
+            fm = {"5": PCT, "6": PCT, "7": "#,##0", "10": NET, "11": NET, "12": NET}
+            al = {"1": "center", "2": "center", "3": "center", "4": "center", "9": "left"}
         else:
-            hd = ["종목", "시장", "섹터", "등락률", "거래대금(억)", "이유", "링크"]
-            rws = [[x["name"], x["mkt"], x.get("sec") or "", x["chg"] / 100,
-                    x["amt_eok"], x["issue"], _lnk(x)] for x in s["rows"]]
-            fm = {"4": PCT, "5": "#,##0"}
+            hd = ["#", "종목", "시장", "섹터", "등락률", "거래대금(억)", "이유", "링크"]
+            rws = [[i + 1, x["name"], x["mkt"], x.get("sec") or "", _pct(x["chg"]),
+                    x["amt_eok"], x["issue"], _lnk(x)] for i, x in enumerate(s["rows"])]
+            fm = {"5": PCT, "6": "#,##0"}
+            al = {"1": "center", "2": "center", "3": "center", "4": "center", "8": "left"}
         blk = {"title": ("🇺🇸 " if us_mode else "🇰🇷 ") + s["title"],
                "col": 9, "row": r, "headers": hd, "rows": rws,
-               "fmts": fm,
-               "align": {"1": "center", "2": "center", "3": "center",
-                         "4": "right",   # 괄호 문자열 셀도 숫자처럼 우측 (10-22)
-                         "7": "left"}}   # 링크 열 명시 왼쪽(10-19 — 잔존 서식 덮기)
+               "fmts": fm, "align": al}     # 링크 열 명시 왼쪽(10-19 — 잔존 서식 덮기)
         # 대금(0)·상승률(1) 표만 순위 변동 색칠 — 상한가·주간 제외
         if prev_secs is not None and si < 2 and si < len(prev_secs):
             bg1 = _rank_bg(s["rows"], (prev_secs[si] or {}).get("rows"))
@@ -1177,36 +1201,38 @@ def _analysis_rows(kr: dict, prev: dict | None):
 
 
 def _track_block(tr: dict, r0: int):
-    """전일 TOP 추적 표(08:10·09:10판) — 현재 등락률순, 종목 칸 상승=연빨강/
+    """전일 TOP 추적 표(08:10·09:10판) — 현재 등락률순, '#' 칸 상승=연빨강/
     하락=연파랑 (10-20 사용자). 이유·수급은 전일판에서 그대로 끌어와 아침
-    복기용으로 병기. 위치는 상한가 표 아래 (10-22 사용자)."""
+    복기용으로 병기. 위치는 상한가 표 아래 (10-22 사용자). 10-28: '#' 순번 열,
+    '20:00比'를 등락률 옆으로(일일 표와 같은 자리), '선정'→'선정판' + 범례."""
     rws, bgs = [], []
-    for x in tr["rows"]:
+    for i, x in enumerate(tr["rows"]):
         chg = x.get("chg")
-        rws.append([x["name"], x["mkt"], x.get("sec") or "",
+        rws.append([i + 1, x["name"], x["mkt"], x.get("sec") or "",
                     (chg / 100 if chg is not None else None),
+                    (x.get("vs2000") / 100 if x.get("vs2000") is not None else None),
                     x.get("amt_prev"), x.get("issue") or "",
                     x.get("issue_url") or "",
                     (x.get("chg_prev") / 100 if x.get("chg_prev") is not None else None),
                     (x.get("flow") or {}).get("p"),
                     (x.get("flow") or {}).get("f"),
                     (x.get("flow") or {}).get("i"),
-                    (x.get("vs2000") / 100 if x.get("vs2000") is not None else None),
                     x.get("sel") or ""])
         bgs.append(RANK_UP_BG if (chg or 0) > 0
                    else RANK_DN_BG if (chg or 0) < 0 else None)
     blk = {"title": (f"🔁 전일({_date_lab(tr['base_date'])} {tr.get('base_slot', '')}판) "
                      f"대금·상승률 TOP{TOP_N} 추적 — 현재 등락률순 "
-                     f"(등락률=전일 15:30 종가 대비 · 20:00比=전일 20:00 가격 대비)"),
+                     f"(등락률=전일 15:30 종가 대비 · 20:00比=전일 20:00 가격 대비 · "
+                     f"선정판=전일 어느 판의 TOP이었는지)"),
            "col": 9, "row": r0,
-           "headers": ["종목", "시장", "섹터", "등락률", "전일 대금(억)", "전일 이유",
-                       "링크", "전일 등락률", "전일 개인(억)", "전일 외국인(억)",
-                       "전일 기관(억)", "20:00比", "선정"],
+           "headers": ["#", "종목", "시장", "섹터", "등락률", "20:00比", "전일 대금(억)",
+                       "전일 이유", "링크", "전일 등락률", "전일 개인(억)",
+                       "전일 외국인(억)", "전일 기관(억)", "선정판"],
            "rows": rws,
-           "fmts": {"4": PCT, "5": "#,##0", "8": PCT,
-                    "9": NET, "10": NET, "11": NET, "12": PCT},
-           "align": {"1": "center", "2": "center", "3": "center", "7": "left",
-                     "13": "center"}}
+           "fmts": {"5": PCT, "6": PCT, "7": "#,##0", "10": PCT,
+                    "11": NET, "12": NET, "13": NET},
+           "align": {"1": "center", "2": "center", "3": "center", "4": "center",
+                     "9": "left", "14": "center"}}
     if any(bgs):
         blk["bg1"] = bgs
     return blk, r0 + 2 + max(len(rws), 1) + 1
@@ -1230,7 +1256,7 @@ def _us_zone(us, prev=None):
                                   prev_secs=(prev or {}).get("sections"))
     end = max(left_end, right_end - 1)
     blocks += sb
-    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 21], "bg": "#000000"})
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 22], "bg": "#000000"})
     return blocks, end + 2
 
 
@@ -1314,14 +1340,14 @@ def _kr_zone(kr, prev=None):
     sb, right_end = _stock_blocks(
         kr["sections"], False, 1, with_flow=True,  # 10-17 복원(일일도 수급 표시)
         prev_secs=None if kr.get("slot") == "week"
-        else (prev or {}).get("sections"))
+        else (prev or {}).get("sections"), slot=kr.get("slot"))
     if (kr.get("track") or {}).get("rows"):
         # 전일 TOP 추적 — 상한가 표 아래 (10-22 사용자: 종목 표 위 → 맨 아래로)
         tb, right_end = _track_block(kr["track"], right_end)
         sb.append(tb)
     end = max(left_end, right_end - 1)
     blocks += sb
-    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 21], "bg": "#000000"})
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 22], "bg": "#000000"})
     return blocks, end + 2
 
 
@@ -1338,7 +1364,7 @@ def _us_week_zone(usw):
     sb, right_end = _stock_blocks(usw["sections"], True, 1)
     end = max(left_end, right_end - 1)
     blocks += sb
-    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 21], "bg": "#000000"})
+    blocks.append({"col": 1, "row": end + 1, "rows": [[""] * 22], "bg": "#000000"})
     return blocks, end + 2
 
 
@@ -1431,7 +1457,7 @@ def push_all() -> int:
             blocks, h = _us_zone(us, prev_us)
             got = _post({"token": token, "date": d_lab + " (미국)",   # 미국 전용 탭 (10-23)
                          "mode": "insert_or_create",
-                         "at": 1, "n": h + 1, "widths": WIDTHS, "blocks": blocks})
+                         "at": 1, "n": h + 1, "widths": WIDTHS_US, "blocks": blocks})
             if got:
                 st["us"] = True
                 n += 1
@@ -1444,7 +1470,7 @@ def push_all() -> int:
             blocks, h = _us_week_zone(usw)
             got = _post({"token": token, "date": d_lab + " (미국)",   # 미국 전용 탭 (10-23)
                          "mode": "insert_or_create",
-                         "at": 1, "n": h + 1, "widths": WIDTHS, "blocks": blocks})
+                         "at": 1, "n": h + 1, "widths": WIDTHS_US, "blocks": blocks})
             if got:
                 st["slots"].append("usweek")
                 n += 1
