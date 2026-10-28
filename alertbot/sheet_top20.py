@@ -197,6 +197,45 @@ def _market_summary(premarket=False):
     return out
 
 
+def _open_gap(kc, codes, today: str, sfx: str = "") -> dict:
+    """시가 기준 등락 (10-28 사용자: 08:10/09:10판 '등락률(시가)' = 시가/전일종가−1,
+    '10분 변동' = 현재가/시가−1). ka10086(일별주가) 종목당 1콜 — open_pric·
+    close_pric(=현재가)·pred_rt(전일비)에서 전일 정규종가 R = 현재가 − 전일비.
+    sfx: '_AL' = 통합(08:10 — NXT 프리마켓 첫 체결이 시가, KRX 는 개장 전 0%),
+    '' = KRX(09:10 — 09:00 동시호가 시가. 네이버 라이브 시가는 프리마켓 포함 통합값이라
+    부적합, 10-22 검증). 미체결 종목은 시가=전일종가 placeholder → gap 0.
+    반환 {code: {"gap": %, "c10": %}}. 연속 3회 실패 시 중단(부분 결과 반환)."""
+    out: dict = {}
+    if kc is None:
+        return out
+    fails = 0
+    for code in codes:
+        if fails >= 3:
+            break
+        try:
+            d, _ = kc.request("ka10086", {"stk_cd": code + sfx, "qry_dt": today,
+                                          "indc_tp": "0"},
+                              endpoint="/api/dostk/mrkcond")
+            key = next((k for k in d if isinstance(d[k], list)), None)
+            r = (d.get(key) or [{}])[0]
+            fails = 0
+            if r.get("date") != today:
+                continue
+            o, c, p = _num(r.get("open_pric")), _num(r.get("close_pric")), _num(r.get("pred_rt"))
+            if not o or not c or p is None:
+                continue
+            o, c = abs(o), abs(c)
+            base = c - p
+            if base <= 0:
+                continue
+            out[code] = {"gap": round((o / base - 1) * 100, 2),
+                         "c10": round((c / o - 1) * 100, 2)}
+        except Exception:
+            fails += 1
+        time.sleep(0.2)
+    return out
+
+
 def _prev_trading_rec(hist, today: str):
     """전 거래일 기준판 — 20:00 우선, 없으면 그 날 마지막 슬롯 (09:10 추적용)."""
     days: dict = {}
@@ -227,7 +266,7 @@ def _prev_trading_bases(hist, today: str) -> list:
     return out or [slots[max(slots)]]
 
 
-def _build_track(bases, now, kc, cur_map=None, al=False, amt_map=None):
+def _build_track(bases, now, kc, cur_map=None, al=False, amt_map=None, open_map=None):
     """전일 대금·상승률 TOP 합집합 → 현재 등락률순 추적 리스트 + 거래원 원장
     (10-20 사용자: ① 상승/하락 빨·파 채우기 ② 상승률순 리스트 ③ 거래원별 수급
     기록 — 분석용). 등락률·거래원은 ka10002 한 콜, 키움 실패 시 네이버 폴백.
@@ -245,6 +284,7 @@ def _build_track(bases, now, kc, cur_map=None, al=False, amt_map=None):
     if isinstance(bases, dict):
         bases = [bases]
     today = now.strftime("%Y%m%d")
+    open_map = dict(open_map or {})      # 10-28: 시가 갭·10분 변동 {code: {gap, c10}}
     lab = {"15:40": "15:30", "20:00": "20:00"}
     r1540 = next((b for b in bases if b.get("slot") == "15:40"), None)
     r2000 = next((b for b in bases if b.get("slot") == "20:00"), None)
@@ -304,6 +344,11 @@ def _build_track(bases, now, kc, cur_map=None, al=False, amt_map=None):
                 d = None
                 fails += 1
             time.sleep(0.2)
+        if r["code"] not in open_map and kc is not None:   # 풀 밖 종목 시가 보충
+            open_map.update(_open_gap(kc, [r["code"]], today, "_AL" if al else ""))
+        g = open_map.get(r["code"])
+        if g:
+            r["chg_open"], r["chg10"] = g["gap"], g["c10"]
         if r["chg"] is None:                 # 키움 실패 — 네이버 폴백(등락률만)
             try:
                 b = requests.get(f"https://m.stock.naver.com/api/stock/{r['code']}/basic",
@@ -346,7 +391,9 @@ def _build_track(bases, now, kc, cur_map=None, al=False, amt_map=None):
         if c1 is not None and c2 is not None:       # after = 15:30 → 20:00 저녁 변동
             r["after"] = round(((1 + c2 / 100) / (1 + c1 / 100) - 1) * 100, 2)
         r["sel"] = "·".join(r["sel"])
-    rows.sort(key=lambda r: (r["chg"] is None, -(r["chg"] or 0)))
+    def _ok(r):          # 표시 등락률(시가 갭, 없으면 현재) 기준 정렬 (10-28)
+        return r.get("chg_open") if r.get("chg_open") is not None else r["chg"]
+    rows.sort(key=lambda r: (_ok(r) is None, -(_ok(r) or 0)))
     return {"base_date": bases[0]["date"],
             "base_slot": "+".join(lab.get(b.get("slot"), b.get("slot") or "")
                                   for b in bases),
@@ -527,12 +574,34 @@ def collect(now=None) -> dict | None:
     except Exception:
         smap = {}
     amt_rows, up_rows = _kiwoom_fetch()
+    slot = _slot_of(now.hour, now.minute)
+    open_map: dict = {}
+    if slot in ("08:10", "09:10"):
+        # 아침판 등락률 = 시가 기준 (10-28 사용자) — 상승률 풀(대금 100위)+상한가 후보
+        try:
+            import kr_sectors as _krs
+            _kc0 = _krs._kc()
+        except Exception:
+            _kc0 = None
+        _pool = sorted(amt_rows.values(), key=lambda r: -r["amt_eok"])[:100]
+        _codes = list(dict.fromkeys([r["code"] for r in _pool]
+                                    + [r["code"] for r in up_rows if r["chg"] >= 29.5]))
+        open_map = _open_gap(_kc0, _codes, today, sfx="_AL" if slot == "08:10" else "")
+        for r in list(amt_rows.values()) + up_rows:
+            g = open_map.get(r["code"])
+            if g:
+                r["chg_open"], r["chg10"] = g["gap"], g["c10"]
+        print(f"[top20] 시가 기준 등락 {len(open_map)}/{len(_codes)}종목 ({slot}판)")
+
+    def _gk(r):          # 아침판: 시가 갭 순위, 그 외: 현재 등락 순위
+        v = r.get("chg_open") if slot in ("08:10", "09:10") else None
+        return v if v is not None else r["chg"]
     top = sorted(amt_rows.values(), key=lambda r: -r["amt_eok"])[:TOP_N]
     # 상승률 표 모집단 = 거래대금 상위 50 (10-16 사용자: 1,000억 하드코딩 대신
     # 상대 기준 — 한산한 날에도 활황인 날에도 같은 의미)
     top100 = sorted(amt_rows.values(), key=lambda r: -r["amt_eok"])[:100]
-    gain = sorted([r for r in top100 if r["chg"] > 0],
-                  key=lambda r: -r["chg"])[:15]
+    gain = sorted([r for r in top100 if _gk(r) > 0],
+                  key=lambda r: -_gk(r))[:15]
     lim = sorted([r for r in up_rows if r["chg"] >= 29.5],
                  key=lambda r: -(r["amt_eok"] or 0))
     n_start = now.replace(hour=0, minute=0)
@@ -590,13 +659,13 @@ def collect(now=None) -> dict | None:
                  "amt_eok": r["amt_eok"] or 0,
                  "chg": round(r["chg"], 2), "issue": r.get("issue") or "",
                  "issue_url": r.get("issue_url") or "",
+                 "chg_open": r.get("chg_open"), "chg10": r.get("chg10"),
                  "flow": r.get("flow")} for r in rs]
     amt200 = [[r["code"], r["name"], r["mkt"], r["amt_eok"], r.get("chg")]
               for r in sorted(amt_rows.values(), key=lambda x: -x["amt_eok"])[:200]]
               # 5번째 chg(10-22): 15:40판 = 종가 기준가 → 저녁판 괄호 변동률 분모
     # 슬롯 스냅샷 (10-16 사용자: 14:30/19/20 버전을 지우지 않고 적층) —
-    # 같은 날 같은 슬롯만 교체, 다른 슬롯은 보존
-    slot = _slot_of(now.hour, now.minute)
+    # 같은 날 같은 슬롯만 교체, 다른 슬롯은 보존 (slot 은 수집 직후 결정)
     rec = {"date": today, "asof": now.strftime("%m/%d %H:%M"), "v": 2,
            "amt100": amt200, "slot": slot,
            "market": _market_summary(premarket=slot == "08:10"), "sections": [
@@ -657,7 +726,8 @@ def collect(now=None) -> dict | None:
                     bases, now, kc,
                     cur_map={c: v["chg"] for c, v in amt_rows.items()},
                     al=(slot == "08:10"),   # 프리마켓은 통합(_AL)가로 등락 조회
-                    amt_map={c: v["amt_eok"] for c, v in amt_rows.items()})
+                    amt_map={c: v["amt_eok"] for c, v in amt_rows.items()},
+                    open_map=open_map)      # 시가 갭·10분 변동 (10-28)
                 print(f"[top20] 전일({bases[0]['date']} {rec['track']['base_slot']}판) "
                       f"TOP 추적 {len(rec['track']['rows'])}종목")
             except Exception as e:
@@ -915,12 +985,19 @@ def _stock_blocks(secs, us_mode, r0, with_flow=False, prev_secs=None, slot=None)
     (10-22 의 괄호 문자열 방식은 폐지 — 등락률 셀의 빨강/파랑 서식 복원.)"""
     blocks, r = [], r0
     eve_slots = ("15:40", "19:00", "20:00")
-    dcol = ("종가比" if slot in eve_slots
-            else "20:00比" if slot in ("08:10", "09:10", "14:30") else "")
-    dkey = "eve" if slot in eve_slots else "vs2000"
+    morning = slot in ("08:10", "09:10")     # 10-28: 등락률=시가 갭, 옆칸=10분 변동
+    dcol = ("종가比" if slot in eve_slots else "10분 변동" if morning
+            else "20:00比" if slot == "14:30" else "")
+    dkey = "eve" if slot in eve_slots else "chg10" if morning else "vs2000"
+    chg_hd = "등락률(시가)" if morning else "등락률"
 
     def _pct(v):
         return v / 100 if v is not None else None
+
+    def _chg_main(x):
+        if morning and x.get("chg_open") is not None:
+            return x["chg_open"] / 100
+        return _pct(x.get("chg"))
     for si, s in enumerate(secs):
         def _lnk(x):
             # URL 원문 그대로 (10-19 사용자: 아이콘 대신 주소 노출) — 시트가
@@ -933,9 +1010,9 @@ def _stock_blocks(secs, us_mode, r0, with_flow=False, prev_secs=None, slot=None)
             fm = {"5": PCT, "6": "0.0"}
             al = {"1": "center", "2": "center", "3": "center", "4": "center", "8": "left"}
         elif with_flow:
-            hd = ["#", "종목", "시장", "섹터", "등락률", dcol, "거래대금(억)", "이유", "링크",
+            hd = ["#", "종목", "시장", "섹터", chg_hd, dcol, "거래대금(억)", "이유", "링크",
                   "개인(억)", "외국인(억)", "기관(억)"]
-            rws = [[i + 1, x["name"], x["mkt"], x.get("sec") or "", _pct(x.get("chg")),
+            rws = [[i + 1, x["name"], x["mkt"], x.get("sec") or "", _chg_main(x),
                     _pct(x.get(dkey)) if dcol else None,
                     x["amt_eok"], x["issue"], _lnk(x),
                     (x.get("flow") or {}).get("p"),
@@ -1225,8 +1302,9 @@ def _track_block(tr: dict, r0: int):
     for i, x in enumerate(tr["rows"]):
         chg = x.get("chg")
         fl = x.get("flow") or {}
+        shown = x.get("chg_open") if x.get("chg_open") is not None else chg
         rws.append([i + 1, x["name"], x["mkt"], x.get("sec") or "",
-                    _p(chg), _p(x.get("vs2000")), x.get("amt_now"),
+                    _p(shown), _p(x.get("chg10")), x.get("amt_now"),
                     x.get("issue") or "", x.get("issue_url") or "",
                     fl.get("p"), fl.get("f"), fl.get("i"),
                     _p(x.get("chg_1530", x.get("chg_prev"))), _p(x.get("after")),
@@ -1234,12 +1312,12 @@ def _track_block(tr: dict, r0: int):
         bgs.append(RANK_UP_BG if (chg or 0) > 0
                    else RANK_DN_BG if (chg or 0) < 0 else None)
     blk = {"title": (f"🔁 전일({_date_lab(tr['base_date'])} {tr.get('base_slot', '')}판) "
-                     f"대금·상승률 TOP{TOP_N} 추적 — 현재 등락률순 "
-                     f"(등락률=전일 15:30 종가 대비 · 20:00比=전일 20:00 대비 · "
+                     f"대금·상승률 TOP{TOP_N} 추적 — 시가 갭순 "
+                     f"(등락률(시가)=전일 15:30 종가 대비 시가 · 10분 변동=시가→수집 시점 · "
                      f"거래대금=현재 · 15:30/after/20:00=전일 종가까지/그 뒤 저녁/종합 등락 · "
                      f"선정판=전일 어느 판 TOP)"),
            "col": 9, "row": r0,
-           "headers": ["#", "종목", "시장", "섹터", "등락률", "20:00比", "거래대금(억)",
+           "headers": ["#", "종목", "시장", "섹터", "등락률(시가)", "10분 변동", "거래대금(억)",
                        "전일 이유", "링크", "전일 개인(억)", "전일 외국인(억)",
                        "전일 기관(억)", "15:30", "after", "20:00", "전일 거래대금(억)",
                        "선정판"],
