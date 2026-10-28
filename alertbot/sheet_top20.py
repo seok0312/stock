@@ -1303,8 +1303,13 @@ def _track_block(tr: dict, r0: int):
         chg = x.get("chg")
         fl = x.get("flow") or {}
         shown = x.get("chg_open") if x.get("chg_open") is not None else chg
+        c2 = x.get("chg_2000")
+        if x.get("chg_open") is not None and c2 is not None:
+            g20 = ((1 + x["chg_open"] / 100) / (1 + c2 / 100) - 1) * 100   # 시가 ÷ 전일 20:00
+        else:
+            g20 = x.get("vs2000")            # 시가 없으면 현재가 기준 폴백
         rws.append([i + 1, x["name"], x["mkt"], x.get("sec") or "",
-                    _p(shown), _p(x.get("chg10")), x.get("amt_now"),
+                    _p(shown), _p(g20), x.get("amt_now"),
                     x.get("issue") or "", x.get("issue_url") or "",
                     fl.get("p"), fl.get("f"), fl.get("i"),
                     _p(x.get("chg_1530", x.get("chg_prev"))), _p(x.get("after")),
@@ -1313,11 +1318,11 @@ def _track_block(tr: dict, r0: int):
                    else RANK_DN_BG if (chg or 0) < 0 else None)
     blk = {"title": (f"🔁 전일({_date_lab(tr['base_date'])} {tr.get('base_slot', '')}판) "
                      f"대금·상승률 TOP{TOP_N} 추적 — 시가 갭순 "
-                     f"(등락률(시가)=전일 15:30 종가 대비 시가 · 10분 변동=시가→수집 시점 · "
+                     f"(등락률(시가)=전일 15:30 종가 대비 시가 · 20:00比=전일 20:00 가격 대비 시가 · "
                      f"거래대금=현재 · 15:30/after/20:00=전일 종가까지/그 뒤 저녁/종합 등락 · "
                      f"선정판=전일 어느 판 TOP)"),
            "col": 9, "row": r0,
-           "headers": ["#", "종목", "시장", "섹터", "등락률(시가)", "10분 변동", "거래대금(억)",
+           "headers": ["#", "종목", "시장", "섹터", "등락률(시가)", "20:00比", "거래대금(억)",
                        "전일 이유", "링크", "전일 개인(억)", "전일 외국인(억)",
                        "전일 기관(억)", "15:30", "after", "20:00", "전일 거래대금(억)",
                        "선정판"],
