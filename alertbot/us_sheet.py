@@ -34,9 +34,9 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
                     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"}
 # ES/NQ 삭제, WTI·금·미10Y 추가 (10-16 사용자). ^TNX 는 수익률×10 스케일.
 # 순서·구성 (10-23 사용자): 리스크 지표(VIX·WTI·금·금리) 먼저, 지수, 그 아래
-# 반도체(SOX) + DRAM 현물지수(DRAMeXchange DXI — 야후 미제공, 홈페이지 위젯 파싱)
+# 반도체(SOX) + DRAM = Roundhill Memory ETF(티커 DRAM, 10-29 사용자: DXI 현물지수 아님)
 IDX = [("VIX", "^VIX"), ("WTI", "CL=F"), ("금", "GC=F"), ("미국10Y", "^TNX"),
-       ("S&P500", "^GSPC"), ("나스닥", "^IXIC"), ("SOX", "^SOX"), ("DRAM(DXI)", "DXI")]
+       ("S&P500", "^GSPC"), ("나스닥", "^IXIC"), ("SOX", "^SOX"), ("DRAM(메모리ETF)", "DRAM")]
 UNIV_CACHE = os.path.join(DATA, "us_univ.json")
 GICS_KR = {"Information Technology": "기술", "Communication Services": "커뮤니케이션",
            "Consumer Discretionary": "경기소비", "Consumer Staples": "필수소비",
@@ -237,7 +237,7 @@ def _summary(market, rows, top, gain):
     if tnx and tnx[2] is not None and abs(tnx[2]) >= 0.04:
         parts.append(f"10Y {tnx[1]:.2f}%({tnx[2]:+.2f}%p) "
                      + ("금리 부담" if tnx[2] > 0 else "금리 안도"))
-    for lab, th in (("WTI", 1.5), ("금", 1.5), ("SOX", 1.5), ("DRAM(DXI)", 0.8)):
+    for lab, th in (("WTI", 1.5), ("금", 1.5), ("SOX", 1.5), ("DRAM(메모리ETF)", 1.5)):
         c = g.get(lab)
         if c and c[2] is not None and abs(c[2]) >= th:
             parts.append(f"{lab} {c[2]:+.1f}%")
@@ -322,12 +322,6 @@ def collect(now=None) -> dict | None:
     market_w = []
     spy = _chart("SPY"); qqq = _chart("QQQ")
     for i, (lab, sym) in enumerate(IDX):
-        if sym == "DXI":                  # DRAM 현물지수 — 야후 아님 (10-23)
-            lv, pc = _dxi()
-            market.append([lab, lv, pc, None])
-            if wk_mode:
-                market_w.append([lab, lv, None, None])
-            continue
         g = _chart(sym)
         time.sleep(0.06)
         dv = None
