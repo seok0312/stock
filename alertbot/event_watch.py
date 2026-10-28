@@ -24,8 +24,9 @@ STATE = os.path.join(HERE, "data", "event_watch.json")
 CAL = "/var/www/html/calendar.json"
 FRESH_MIN = 30          # 이보다 오래 지난 일정은 알리지 않고 마킹만
 WAIT_ACTUAL_MIN = 45    # 지표 실제값 대기 한도
-US_EARN_WAIT_MIN = 180  # 미국 실적 실제 EPS 대기 — 야후 반영이 수 분(TSLA)~
-                        # 수 시간(META) 지연됨 (10-22 사용자: 예상치만 와서 수정)
+US_EARN_WAIT_MIN = 120  # 미국 실적 실제 EPS 1차 대기 — 이후엔 '집계 중'으로 발송하고
+                        # pending 후속(36h, 5분마다 재확인 → 확정 재알림) (10-29 사용자)
+US_EARN_PENDING_H = 36
 UA_STR = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
 
@@ -127,13 +128,27 @@ def _kr_earn_actual(comp: str, event_name: str, now):
     return {"line": " · ".join(body), "title": title, "url": url}
 
 
-def _us_earn_actual(sym: str, now):
-    """야후 earningsHistory 에서 '이번 발표' 분기의 (실제 EPS, 예상, 서프라이즈).
+US_KR_NAME: dict = {}
 
-    v10 quoteSummary 는 crumb 필수(무크럼 401, 10-22) — fc.yahoo.com 쿠키 →
-    getcrumb → 조회. 새 분기 행 반영이 발표 후 수 분~수 시간 걸리므로 분기말이
-    최근 75일 내인 행만 이번 발표로 인정, 아니면 None(호출측 대기)."""
+
+def _kr_name(sym: str) -> str:
+    """티커 → 한글명 (movers.US_UNIV 수동맵, 지연 로드). 뉴스 풀 검색용."""
+    if not US_KR_NAME:
+        try:
+            import movers
+            US_KR_NAME.update({s: k for s, k, _ in movers.US_UNIV})
+        except Exception:
+            pass
+    return US_KR_NAME.get(sym, "")
+
+
+def _us_earn_actual(sym: str, now, when=None):
+    """미국 실적 실제 EPS — 다중 소스 캐스케이드 (10-29 사용자: 예상치만 오는 문제 재발).
+    ① 야후 earningsHistory(신규 분기 행, 분기말 75일 내) ② 야후 earnings 모듈 quarterly
+    (reportedDate 3일 내) ③ 나스닥 earnings-surprise(dateReported 3일 내) ④ 한글 뉴스 제목
+    'EPS n달러'(발표 이후 기사, 제목 첨부). 반환 {a, e, sp, src, title?, url?} 또는 None."""
     import requests
+    out = None
     try:
         s = requests.Session()
         s.headers["User-Agent"] = UA_STR
@@ -143,27 +158,95 @@ def _us_earn_actual(sym: str, now):
             pass
         crumb = s.get("https://query1.finance.yahoo.com/v1/test/getcrumb",
                       timeout=8).text.strip()
-        if not crumb or len(crumb) > 24:
-            return None
-        j = s.get(f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}",
-                  params={"modules": "earningsHistory", "crumb": crumb},
-                  timeout=10).json()
-        rows = (((j.get("quoteSummary") or {}).get("result") or [{}])[0]
-                .get("earningsHistory") or {}).get("history") or []
-        rows = [r for r in rows if (r.get("quarter") or {}).get("raw")]
-        if not rows:
-            return None
-        nw = max(rows, key=lambda r: r["quarter"]["raw"])
-        if now.timestamp() - nw["quarter"]["raw"] > 75 * 86400:
-            return None                   # 신규 분기 행 아직 미반영
-        a = (nw.get("epsActual") or {}).get("raw")
-        if a is None:
-            return None
-        return (a, (nw.get("epsEstimate") or {}).get("raw"),
-                (nw.get("surprisePercent") or {}).get("raw"))
+        if crumb and len(crumb) <= 24:
+            j = s.get(f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}",
+                      params={"modules": "earningsHistory,earnings", "crumb": crumb},
+                      timeout=10).json()
+            res = ((j.get("quoteSummary") or {}).get("result") or [{}])[0]
+            rows = [r for r in ((res.get("earningsHistory") or {}).get("history") or [])
+                    if (r.get("quarter") or {}).get("raw")]
+            if rows:
+                nw = max(rows, key=lambda r: r["quarter"]["raw"])
+                a = (nw.get("epsActual") or {}).get("raw")
+                if a is not None and now.timestamp() - nw["quarter"]["raw"] <= 75 * 86400:
+                    out = {"a": a, "e": (nw.get("epsEstimate") or {}).get("raw"),
+                           "sp": (nw.get("surprisePercent") or {}).get("raw"), "src": "yahoo"}
+            if out is None:
+                q = ((res.get("earnings") or {}).get("earningsChart") or {}).get("quarterly") or []
+                for r in reversed(q):
+                    a = (r.get("actual") or {}).get("raw")
+                    rd = (r.get("reportedDate") or {}).get("raw")
+                    if a is not None and rd and now.timestamp() - rd <= 3 * 86400:
+                        e = (r.get("estimate") or {}).get("raw")
+                        out = {"a": a, "e": e, "sp": ((a / e - 1) if e else None), "src": "yahoo-q"}
+                        break
     except Exception:
-        return None
+        pass
+    if out is None:
+        try:
+            r = requests.get(f"https://api.nasdaq.com/api/company/{sym}/earnings-surprise",
+                             headers={"User-Agent": UA_STR,
+                                      "Accept": "application/json, text/plain, */*",
+                                      "Origin": "https://www.nasdaq.com",
+                                      "Referer": "https://www.nasdaq.com/"}, timeout=12)
+            rows = ((((r.json() if r.ok else {}).get("data") or {})
+                     .get("earningsSurpriseTable") or {}).get("rows") or [])
+            for row in rows[:2]:
+                try:
+                    rd = datetime.strptime(str(row.get("dateReported", "")),
+                                           "%m/%d/%Y").replace(tzinfo=KST)
+                except ValueError:
+                    continue
+                a = _num(row.get("eps"))
+                if (now - rd).days <= 3 and a is not None:
+                    e = _num(str(row.get("consensusForecast", "")).replace(",", ""))
+                    sp = _num(row.get("percentageSurprise"))
+                    out = {"a": a, "e": e, "sp": (sp / 100 if sp is not None else None),
+                           "src": "nasdaq"}
+                    break
+        except Exception:
+            pass
+    if out is None and when is not None:
+        try:
+            import news
+            kr = _kr_name(sym)
+            hits = news._pool_match(keywords=tuple(k for k in (kr, sym) if k), tickers=(sym,),
+                                    limit=15, start=when - timedelta(minutes=30), end=now)
+            for h in hits:
+                t = h["title"]
+                m = re.search(r"(?:EPS|주당\s*순이익|주당순익)\D{0,12}([0-9]+(?:\.[0-9]+)?)\s*달러", t)
+                if not m:
+                    continue
+                a = float(m.group(1))
+                me = re.search(r"(?:예상|전망|컨센서스|시장\s*예상)\D{0,10}([0-9]+(?:\.[0-9]+)?)\s*달러", t)
+                e = float(me.group(1)) if me else None
+                out = {"a": a, "e": e, "sp": ((a / e - 1) if e else None), "src": "news",
+                       "title": t[:70], "url": h.get("url")}
+                break
+        except Exception:
+            pass
+    return out
 
+
+def _us_earn_line(got: dict, esc, val: str = "") -> str:
+    """실제 EPS 라인 — 예상치 없으면 캘린더 val('EPS 예상 $4.72')에서 보충."""
+    a, e, sp = got.get("a"), got.get("e"), got.get("sp")
+    if e is None and val:
+        m = re.search(r"\$\s*([0-9]+(?:\.[0-9]+)?)", val)
+        if m:
+            e = float(m.group(1))
+            sp = (a / e - 1) if e else None
+    body = [f"EPS 실제 <b>${a:g}</b>"]
+    if e is not None:
+        body.append(f"예상 ${e:.2f}")
+    if sp is not None:
+        body.append("<b>" + f"{abs(sp) * 100:.0f}% " + ("상회" if sp >= 0 else "하회") + "</b>")
+    line = " · ".join(body)
+    if got.get("src") == "news":
+        line += " (뉴스 제목 기준)"
+    if got.get("title"):
+        line += f"\n<i>{esc(got['title'])}</i>"
+    return line
 
 def _us_earn_announced(sym: str, when, kr_name: str = "") -> bool:
     """발표가 '실제로 있었는지' 판별 (10-22: META 실발표를 earningsHistory 지연
@@ -213,8 +296,6 @@ def run(now=None, dry_run=False) -> int:
     today = now.strftime("%Y%m%d")
     cal = _load(CAL, {})
     day = next((d for d in cal.get("days") or [] if d.get("date") == today), None)
-    if not day:
-        return 0
     state = _load(STATE, {})
     import notify
     notify.load_env(os.path.join(HERE, ".env"),
@@ -222,12 +303,36 @@ def run(now=None, dry_run=False) -> int:
                     "/opt/upbit_bot/.env")   # 텔레그램 토큰은 서버에선 여기 (10-20 장애: 누락 시 콘솔 출력만 되고 True)
     esc = notify.esc
     n_sent, fx_cache = 0, {}
-    for it in day.get("items") or []:
+    # 실제치 미확정으로 나간 미국 실적 알림의 후속 (10-29 사용자): 36시간까지 매 주기
+    # 소스 재확인 → 확정되면 '📢 실적 확정' 재알림 후 pending 해제
+    for key, v in list(state.items()):
+        pend = v.get("pending") if isinstance(v, dict) else None
+        if not pend:
+            continue
+        try:
+            when_p = datetime.fromisoformat(pend["when"])
+        except Exception:
+            when_p = now
+        if (now - when_p).total_seconds() > US_EARN_PENDING_H * 3600:
+            v.pop("pending", None)
+            continue
+        got = _us_earn_actual(pend["sym"], now, when_p)
+        if not got:
+            continue
+        line = _us_earn_line(got, esc, pend.get("val", ""))
+        ok = notify.send(f"📢 <b>실적 확정</b> {esc(pend['name'])}\n{line}",
+                         dry_run=dry_run, allow_muted=True)
+        v["line"] = line
+        v.pop("pending", None)
+        n_sent += 1
+        print(f"[watch] 실적 확정 재알림: {pend['name']} 발송={ok} ({got.get('src')})")
+    for it in (day or {}).get("items") or []:
         if not it.get("sss"):
             continue
         key = f"{today}|{it['t']}|{it['name']}"
         if key in state:
             continue
+        pending = None
         try:
             hh, mm = it["t"].split(":")
             when = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
@@ -267,40 +372,24 @@ def run(now=None, dry_run=False) -> int:
             lines = " · ".join(body)
         elif us_earn:
             m = re.match(r"([A-Z]{1,5})\b", core)
-            got = _us_earn_actual(m.group(1), now) if m else None
-            if got is None and m and age_min < US_EARN_WAIT_MIN:
-                continue                 # 야후 신규 분기 행 대기 — 마킹 안 함
+            sym = m.group(1) if m else ""
+            got = _us_earn_actual(sym, now, when) if sym else None
+            if got is None and sym and age_min < US_EARN_WAIT_MIN:
+                continue                 # 실제치 대기 — 마킹 안 함
             if got is None and "잠정일" in (it.get("val") or ""):
-                # 잠정일 + 실제치 無: '발표 자체가 없었는지' 먼저 판별 (10-22:
-                # META 는 실발표였는데 야후 수치만 12시간+ 지연 — 단순 보류는 침묵 오류)
-                kr_nm = ""
-                try:
-                    import movers
-                    kr_nm = next((kr for sym2, kr, _ in movers.US_UNIV
-                                  if sym2 == m.group(1)), "")
-                except Exception:
-                    pass
-                if m and _us_earn_announced(m.group(1), when, kr_nm):
-                    lines = (esc(it.get("val") or "")
-                             + " · <b>발표 확인</b> — 실제 수치 반영 지연(야후), "
-                               "아침 브리핑에서 재조회").strip(" ·")
-                else:
+                # 잠정일 + 실제치 無: 발표 자체가 없었는지 판별 (10-22 META 교훈)
+                if not (sym and _us_earn_announced(sym, when, _kr_name(sym))):
                     state[key] = (f"{now.isoformat(timespec='seconds')} "
                                   "(잠정일-발표 확인 안 됨, 알림 보류)")
                     print(f"[watch] 보류(잠정일 미확인): {it['name']}")
                     continue
             if got:
-                a, e, sp = got
-                body = [f"EPS 실제 <b>${a:g}</b>"]
-                if e is not None:
-                    body.append(f"예상 ${e:.2f}")
-                if sp is not None:
-                    body.append("<b>" + f"{abs(sp) * 100:.0f}% "
-                                + ("상회" if sp >= 0 else "하회") + "</b>")
-                lines = " · ".join(body)
-            else:                        # 한도 초과 — 예상치라도 발송
+                lines = _us_earn_line(got, esc, it.get("val") or "")
+            else:                        # 1차 한도 초과 — 집계 중 명시 + 후속 재알림 예약
                 lines = (esc(it.get("val") or "")
-                         + " · 실제값 야후 미게시(지연)").strip(" ·")
+                         + " · <b>실제치 집계 중</b> — 확인되면 재알림").strip(" ·")
+                pending = {"sym": sym, "name": it["name"], "when": when.isoformat(),
+                           "val": it.get("val") or ""}
         elif it.get("type") == "실적" and "🇰🇷" in it["name"]:
             comp = next((c for c in KR_EARN_CODE if c in core), None)
             got = _kr_earn_actual(comp, core, now) if comp else None
@@ -317,8 +406,10 @@ def run(now=None, dry_run=False) -> int:
         msg = (f"📢 <b>발표완료</b> ({it['t']})\n{esc(it['name'])}"
                + (f"\n{lines}" if lines else ""))
         ok = notify.send(msg, dry_run=dry_run, allow_muted=True)
-        # 실제치 라인을 상태에 보존 → 다이제스트 완료분에 재사용 (10-22)
+        # 실제치 라인을 상태에 보존 → 다이제스트 완료분에 재사용 (10-22); 미확정이면 pending
         state[key] = {"at": now.isoformat(timespec="seconds"), "line": lines or ""}
+        if pending:
+            state[key]["pending"] = pending
         n_sent += 1
         print(f"[watch] 알림: {it['name']} ({it['t']}) 발송={ok}")
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
@@ -373,14 +464,11 @@ def digest(now=None, dry_run=False) -> bool:
                 # 야후 수치 지연분 재조회 — 알림 땐 없던 실제치가 아침엔 반영됨 (10-22)
                 m2 = re.match(r"([A-Z]{1,5})\b",
                               re.sub(r"^[^\w가-힣]+", "", it["name"]).strip())
-                got = _us_earn_actual(m2.group(1), now) if m2 else None
+                got = _us_earn_actual(m2.group(1), now, w) if m2 else None
                 if got:
-                    a, e, sp = got
-                    extra = (f"EPS 실제 <b>${a:g}</b>"
-                             + (f" · 예상 ${e:.2f}" if e is not None else "")
-                             + (" · <b>" + f"{abs(sp) * 100:.0f}% "
-                                + ("상회" if sp >= 0 else "하회") + "</b>"
-                                if sp is not None else ""))
+                    extra = _us_earn_line(got, esc, it.get("val") or "").split("\n")[0]
+                else:                     # 아직 어느 소스에도 없음 — 예상치를 결과처럼 쓰지 않는다
+                    extra = (esc(it.get("val") or "") + " · 실제치 집계 중(확인 시 재알림)").strip(" ·")
             if not extra and it.get("val"):      # 실제치 미보존 — 예정 문구 폴백
                 extra = esc(it["val"])
             L.append(f"  · {w:%H:%M} {esc(it['name'])}"
