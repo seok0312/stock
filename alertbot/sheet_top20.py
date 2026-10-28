@@ -384,12 +384,14 @@ def _build_track(bases, now, kc, cur_map=None, al=False, amt_map=None, open_map=
                 f.write(json.dumps(x, ensure_ascii=False) + "\n")
         os.replace(tmp, BROKER_LOG)
         print(f"[top20] 거래원 기록 {len(logs)}종목 → broker_log.jsonl")
-    for r in rows:                      # 20:00 가격 대비 오늘 변동 + 전일 3분해 + 선정 라벨
+    for r in rows:                      # 전일 3분해 → 20:00 가격 대비 오늘 변동 + 선정 라벨
         c2, c1 = r.get("chg_2000"), r.get("chg_1530")
-        if r["chg"] is not None and c2 is not None:
-            r["vs2000"] = round(((1 + r["chg"] / 100) / (1 + c2 / 100) - 1) * 100, 2)
-        if c1 is not None and c2 is not None:       # after = 15:30 → 20:00 저녁 변동
+        if c1 is not None and c2 is not None:       # after = 15:30 → 20:00 저녁 변동 (E1/R1−1)
             r["after"] = round(((1 + c2 / 100) / (1 + c1 / 100) - 1) * 100, 2)
+        # 오늘 등락률(기준 R1=전일 종가) ÷ 전일 저녁 변동 — chg_2000(기준 R2) 로 직접
+        # 나누던 초기 구현은 틀림 (10-28 사용자 지적)
+        if r["chg"] is not None and r.get("after") is not None:
+            r["vs2000"] = round(((1 + r["chg"] / 100) / (1 + r["after"] / 100) - 1) * 100, 2)
         r["sel"] = "·".join(r["sel"])
     def _ok(r):          # 표시 등락률(시가 갭, 없으면 현재) 기준 정렬 (10-28)
         return r.get("chg_open") if r.get("chg_open") is not None else r["chg"]
@@ -691,19 +693,27 @@ def collect(now=None) -> dict | None:
             except Exception:
                 h["slot"] = "20:00"
     if slot in ("08:10", "09:10", "14:30"):
-        # '20:00比' 열(10-28 사용자): 전일 20:00판 가격 대비 오늘 변동 — 저녁에 뜬
-        # 종목이 유지됐는지. 기준 = 전 거래일 20:00판 amt100 의 chg(5번째 필드).
+        # '20:00比' 열(10-28 사용자): 전일 20:00 가격 대비 오늘 변동 — 저녁에 뜬
+        # 종목이 유지됐는지. P/E1 = (P/R1)/(E1/R1): 오늘 등락률(기준 R1=전일 종가)을
+        # 전일 저녁 변동 δ=E1/R1−1 로 나눈다. δ = 20:00판 chg(E1/R2) ÷ 15:40판 chg
+        # (R1/R2) — 20:00판 chg 로 직접 나누면 기준가(R2)가 달라 틀림(10-28 버그).
         b2000 = next((h for h in reversed(hist)
                       if h.get("date", "") < today and h.get("slot") == "20:00"), None)
-        emap = {r[0]: r[4] for r in (b2000 or {}).get("amt100") or []
-                if len(r) >= 5 and r[4] is not None}
-        if emap:
+        b1540 = next((h for h in reversed(hist)
+                      if b2000 and h.get("date") == b2000.get("date")
+                      and h.get("slot") == "15:40"), None)
+        e20 = {r[0]: r[4] for r in (b2000 or {}).get("amt100") or []
+               if len(r) >= 5 and r[4] is not None}
+        c15 = {r[0]: r[4] for r in (b1540 or {}).get("amt100") or []
+               if len(r) >= 5 and r[4] is not None}
+        dmap = {c: (1 + e20[c] / 100) / (1 + c15[c] / 100) - 1
+                for c in e20 if c in c15 and c15[c] > -100}
+        if dmap:
             for s in rec["sections"]:
                 for x in s["rows"]:
-                    c0 = emap.get(x.get("code"))
-                    if c0 is not None and x.get("chg") is not None:
-                        x["vs2000"] = round(((1 + x["chg"] / 100)
-                                             / (1 + c0 / 100) - 1) * 100, 2)
+                    d0 = dmap.get(x.get("code"))
+                    if d0 is not None and x.get("chg") is not None:
+                        x["vs2000"] = round(((1 + x["chg"] / 100) / (1 + d0) - 1) * 100, 2)
     if slot in ("19:00", "20:00"):
         # '종가比' 열(10-22 괄호 → 10-28 별도 열): 당일 15:30 종가 대비 변동.
         # 기준가 = 같은 날 15:40판(장후 시간외종가거래 중 = 종가 고정가) amt100 의 chg.
@@ -1303,9 +1313,12 @@ def _track_block(tr: dict, r0: int):
         chg = x.get("chg")
         fl = x.get("flow") or {}
         shown = x.get("chg_open") if x.get("chg_open") is not None else chg
-        c2 = x.get("chg_2000")
-        if x.get("chg_open") is not None and c2 is not None:
-            g20 = ((1 + x["chg_open"] / 100) / (1 + c2 / 100) - 1) * 100   # 시가 ÷ 전일 20:00
+        # 시가 ÷ 전일 20:00 = (시가÷R1)÷(E1÷R1) → 전일 저녁 변동 after 로 나눈다.
+        # chg_2000 은 전전일 종가(R2) 기준이라 직접 나누면 틀림 (10-28 사용자: 나무가
+        # 전일 15:30=20:00 인데 등락률≠20:00比 였던 버그).
+        af = x.get("after")
+        if x.get("chg_open") is not None and af is not None:
+            g20 = ((1 + x["chg_open"] / 100) / (1 + af / 100) - 1) * 100
         else:
             g20 = x.get("vs2000")            # 시가 없으면 현재가 기준 폴백
         rws.append([i + 1, x["name"], x["mkt"], x.get("sec") or "",
