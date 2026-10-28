@@ -1021,8 +1021,8 @@ def _stock_blocks(secs, us_mode, r0, with_flow=False, prev_secs=None, slot=None)
     blocks, r = [], r0
     eve_slots = ("15:40", "19:00", "20:00")
     morning = slot in ("08:10", "09:10")     # 10-28: 등락률=시가 갭, 옆칸=10분 변동
-    dcol = ("종가比" if slot in eve_slots else "10분 변동" if morning
-            else "20:00比" if slot == "14:30" else "")
+    dcol = ("종가比" if slot in eve_slots else "10분 변동" if morning else "")
+    # 14:30판은 빈 열 — 전일 20:00 대비는 장중엔 의미 없음 (10-28 사용자)
     dkey = "eve" if slot in eve_slots else "chg10" if morning else "vs2000"
     chg_hd = "등락률(시가)" if morning else "등락률"
 
