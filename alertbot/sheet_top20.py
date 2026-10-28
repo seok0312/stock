@@ -60,8 +60,11 @@ def _save_state(s: dict):
     json.dump(s, open(STATE, "w", encoding="utf-8"), ensure_ascii=False)
 
 
-def _kiwoom_fetch():
-    """(대금상위 {code: row}, 등락률상위 [row]) — row: name/mkt/amt_eok/chg."""
+def _kiwoom_fetch(slot=None):
+    """(대금상위 {code: row}, 등락률상위 [row]) — row: name/mkt/amt_eok/chg.
+    slot=="15:40" 이면 등락률·현재가를 KRX 단독(stex 1)으로 덮어 정규 종가 R 그대로
+    기록(10-28 검수: 통합은 15:48 시점 NXT 애프터 18분이 섞여 종가比 기준이 어긋남).
+    대금은 통합(stex 3) 유지 — NXT 본장 포함이 실제 유통 대금."""
     import kr_sectors as krs
     kc = krs._kc()
     amt_rows: dict = {}
@@ -78,6 +81,19 @@ def _kiwoom_fetch():
                               "amt_eok": round(amt / 100), "chg": chg,
                               "cur": _num(r.get("cur_prc"))}
         time.sleep(0.1)
+    if slot == "15:40":
+        for mrkt in ("001", "101"):
+            try:
+                d, _ = kc.request("ka10032", {"mrkt_tp": mrkt, "mang_stk_incls": "1",
+                                              "stex_tp": "1"}, endpoint="/api/dostk/rkinfo")
+            except Exception:
+                continue
+            for r in d.get("trde_prica_upper") or []:
+                code = str(r.get("stk_cd") or "")[:6]
+                if code in amt_rows and _num(r.get("flu_rt")) is not None:
+                    amt_rows[code]["chg"] = _num(r.get("flu_rt"))
+                    amt_rows[code]["cur"] = _num(r.get("cur_prc"))
+            time.sleep(0.1)
     up_rows = []
     for mrkt, lab in (("001", "코스피"), ("101", "KOSDAQ")):
         d, _ = kc.request("ka10027", {"mrkt_tp": mrkt, "sort_tp": "1",
@@ -321,9 +337,16 @@ def _build_track(bases, now, kc, cur_map=None, al=False, amt_map=None, open_map=
                      "chg_1530": close_chg.get(code) if r1540 else None,
                      "chg_2000": eve_chg.get(code, x.get("chg") if b is r2000 else None),
                      "issue": x.get("issue") or "", "issue_url": x.get("issue_url") or "",
-                     "flow": x.get("flow")}
+                     "flow": x.get("flow_all") or x.get("flow")}
                 seen[code] = r
                 rows.append(r)
+    # 전일 수급은 20:00판 통합 확정치 우선 (10-28 사용자: 15:40판 잠정/KRX 단독 → 교체)
+    f20 = {x.get("code"): x for s in (r2000 or {}).get("sections") or []
+           for x in s.get("rows") or [] if x.get("code")}
+    for r in rows:
+        x20 = f20.get(r["code"])
+        if x20 and (x20.get("flow_all") or x20.get("flow")):
+            r["flow"] = x20.get("flow_all") or x20.get("flow")
     logs = []
     fails = 0
     for r in rows:
@@ -575,8 +598,8 @@ def collect(now=None) -> dict | None:
         smap = nxt.load_sector_map()
     except Exception:
         smap = {}
-    amt_rows, up_rows = _kiwoom_fetch()
     slot = _slot_of(now.hour, now.minute)
+    amt_rows, up_rows = _kiwoom_fetch(slot)
     open_map: dict = {}
     if slot in ("08:10", "09:10"):
         # 아침판 등락률 = 시가 기준 (10-28 사용자) — 상승률 풀(대금 100위)+상한가 후보
@@ -624,36 +647,38 @@ def collect(now=None) -> dict | None:
         kc = krs._kc()
     except Exception:
         kc = None
-    fl_cache: dict = {}
-    for r in top + gain + lim:
-        code = r["code"]
-        if code in fl_cache or kc is None:
-            r["flow"] = fl_cache.get(code)
-            continue
+    def _flow_one(code, sfx):
+        """ka10059 당일 수급 {p,f,i} 억 — sfx '' = KRX 단독, '_AL' = KRX+NXT 통합
+        (10-28 사용자: 통합이 KRX 단독과 크게 달라 NXT 세션 수급을 놓치고 있었음).
+        당일 행 없으면 None. 개인 미공표(장중)면 -(외+기) 근사."""
         try:
-            d, _ = kc.request("ka10059", {"dt": today, "stk_cd": code,
+            d, _ = kc.request("ka10059", {"dt": today, "stk_cd": code + sfx,
                                           "amt_qty_tp": "1", "trde_tp": "0",
                                           "unit_tp": "1"},
                               endpoint="/api/dostk/stkinfo")
             rows0 = sorted((x for x in d.get("stk_invsr_orgn") or []),
                            key=lambda x: x.get("dt") or "", reverse=True)
             t0 = rows0[0] if rows0 and rows0[0].get("dt") == today else None
-            if t0:
-                f = _num(t0.get("frgnr_invsr")) or 0
-                i = _num(t0.get("orgn")) or 0
-                p = _num(t0.get("ind_invsr"))
-                if not p:
-                    p = -(f + i)
-                fl_cache[code] = {"p": round(p / 100), "f": round(f / 100),
-                                  "i": round(i / 100)}
-            else:
-                fl_cache[code] = None
+            if not t0:
+                return None
+            f = _num(t0.get("frgnr_invsr")) or 0
+            i = _num(t0.get("orgn")) or 0
+            p = _num(t0.get("ind_invsr"))
+            if not p:
+                p = -(f + i)
+            return {"p": round(p / 100), "f": round(f / 100), "i": round(i / 100)}
         except Exception:
-            fl_cache[code] = None
-        r["flow"] = fl_cache[code]
-        time.sleep(0.25)
+            return None
+    fl_cache: dict = {}
     for r in top + gain + lim:
-        r.setdefault("flow", fl_cache.get(r["code"]))
+        code = r["code"]
+        if code not in fl_cache:
+            if kc is None:
+                fl_cache[code] = (None, None)
+            else:
+                fl_cache[code] = (_flow_one(code, ""), _flow_one(code, "_AL"))
+                time.sleep(0.25)
+        r["flow"], r["flow_all"] = fl_cache[code]
 
     def pack(rs):
         return [{"code": r["code"], "name": r["name"], "mkt": r["mkt"],
@@ -662,7 +687,7 @@ def collect(now=None) -> dict | None:
                  "chg": round(r["chg"], 2), "issue": r.get("issue") or "",
                  "issue_url": r.get("issue_url") or "",
                  "chg_open": r.get("chg_open"), "chg10": r.get("chg10"),
-                 "flow": r.get("flow")} for r in rs]
+                 "flow": r.get("flow"), "flow_all": r.get("flow_all")} for r in rs]
     amt200 = [[r["code"], r["name"], r["mkt"], r["amt_eok"], r.get("chg")]
               for r in sorted(amt_rows.values(), key=lambda x: -x["amt_eok"])[:200]]
               # 5번째 chg(10-22): 15:40판 = 종가 기준가 → 저녁판 괄호 변동률 분모
@@ -1025,9 +1050,10 @@ def _stock_blocks(secs, us_mode, r0, with_flow=False, prev_secs=None, slot=None)
             rws = [[i + 1, x["name"], x["mkt"], x.get("sec") or "", _chg_main(x),
                     _pct(x.get(dkey)) if dcol else None,
                     x["amt_eok"], x["issue"], _lnk(x),
-                    (x.get("flow") or {}).get("p"),
-                    (x.get("flow") or {}).get("f"),
-                    (x.get("flow") or {}).get("i")] for i, x in enumerate(s["rows"])]
+                    (x.get("flow_all") or x.get("flow") or {}).get("p"),
+                    (x.get("flow_all") or x.get("flow") or {}).get("f"),
+                    (x.get("flow_all") or x.get("flow") or {}).get("i")]
+                   for i, x in enumerate(s["rows"])]
             fm = {"5": PCT, "6": PCT, "7": "#,##0", "10": NET, "11": NET, "12": NET}
             al = {"1": "center", "2": "center", "3": "center", "4": "center", "9": "left"}
         else:
